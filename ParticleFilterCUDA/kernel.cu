@@ -53,14 +53,14 @@ __global__ void Predict(Particle* D_in, Particle* C_out, curandState* states, fl
     //# update heading
     float heading = D_in->heading[tid];
     heading += u[0] + curand_normal(&states[tid]);
-    heading = std::fmod(D_in->heading[tid], 2 * PI);
-
+    heading = std::fmod(heading, 2 * PI);
+        
     //# move in the (noisy) commanded direction
     float dist = (u[1] * dt) + (curand_uniform(&states[tid]) * std[1]);
     float pos_x = D_in->x[tid];
     float pos_y = D_in->y[tid];
-    pos_x += std::cos(D_in->heading[tid]) * dist;
-    pos_y += std::sin(D_in->heading[tid]) * dist;
+    pos_x += std::cos(heading) * dist;
+    pos_y += std::sin(heading) * dist;
 
     C_out->x[tid] = pos_x;
     C_out->y[tid] = pos_y;
