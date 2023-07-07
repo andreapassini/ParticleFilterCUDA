@@ -71,16 +71,16 @@ __global__ void Predict(Particle* D_in, Particle* C_out, curandState* states, fl
 __global__ void Update(Particle* particles, Particle* C_out, float* weights, float* z, float* landmarks, int numberOfLandmarks, float R) {
     //# weights init as ones / N
 
-    for (int i = 0; i < numberOfLandmarks; i++) {
-        float distance =
-    }
+    //for i, landmark in enumerate(landmarks) :
+    //    distance = np.linalg.norm(particles[:, 0 : 2] /*Fist 2 dim*/ - landmark, axis = 1) // Frobenius norm or Euclidean norm
+    //    weights *= scipy.stats.norm(distance, R).pdf(z[i]) // norm.pdf(x) = exp(-x**2/2)/sqrt(2*pi)
 
-    for i, landmark in enumerate(landmarks) :
-        distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
-        weights *= scipy.stats.norm(distance, R).pdf(z[i])
 
-        weights += 1.e-300      # avoid round - off to zero
-        weights /= sum(weights) # normalize
+    //weights += 1.e-300      # avoid round - off to zero
+    //weights /= sum(weights) # normalize
+
+    
+
 }
 
 int main()
@@ -149,23 +149,23 @@ cudaError_t particleFilter(Particle* p) {
         goto Error;
     }
 
-    cudaStatus = cudaMalloc((void**)&d_p.weight, DIM * sizeof(float));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-    cudaStatus = cudaMemcpy(d_p.weight, p->weight, DIM * sizeof(float), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
     cudaStatus = cudaMalloc((void**)&d_p.heading, DIM * sizeof(float));
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
     cudaStatus = cudaMemcpy(d_p.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&d_p.weights, DIM * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(d_p.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
@@ -200,8 +200,8 @@ cudaError_t particleFilter(Particle* p) {
 Error:
     cudaFree(d_p.x);
     cudaFree(d_p.y);
-    cudaFree(d_p.weight);
     cudaFree(d_p.heading);
+    cudaFree(d_p.weights);
 
     return cudaStatus;
 }

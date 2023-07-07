@@ -5,8 +5,8 @@
 typedef struct Particle {
     float* x;
     float* y;
-    float* weight;
     float* heading;
+    float* weights;
 };
 
 typedef struct Vec2 {
