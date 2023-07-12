@@ -2,16 +2,21 @@
 #include <stdio.h>
 #include <cmath>
 
-typedef struct Particle {
+typedef struct Particles {
     float* x;
     float* y;
     float* heading;
     float* weights;
 };
 
-typedef struct Vec2 {
+typedef struct float2 {
     float x;
     float y;
 };
 
-void CreateParticleDim(Particle* p, float dim);
+typedef struct floats2 {
+    float* x;
+    float* y;
+};
+
+void CreateParticleDim(Particles* p, float dim);

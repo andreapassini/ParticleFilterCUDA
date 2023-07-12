@@ -1,20 +1,34 @@
-﻿
-#include "cuda_runtime.h"
+﻿#include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include <cuda.h>
 #include <curand_kernel.h>
+
+// Not recommended by NVIDIA for unpredictable side effects but it works
+//for __syncthreads()
+#ifndef __CUDACC__ 
+#define __CUDACC__
+#endif
+#include <device_functions.h>
 
 #include "common.h"
 #include "Particle.h"
 
 #include <stdio.h>
 #include <cmath>
+#include <string>
+
+#include <sm_60_atomic_functions.h>
 
 #define PI 3.141592f
 
 #define IDX(i,j,n) (i*n+j)
 #define ABS(x,y) (x-y>=0?x-y:y-x)
+
 #define DIM 100
+
+#define BLOCKSIZE 1024  // block dim 1D
+#define NUMBLOCKS 1024  // grid dim 1D 
+#define N (NUMBLOCKS * BLOCKSIZE)
 
 
 cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
@@ -27,7 +41,7 @@ __global__ void addKernel(int *c, const int *a, const int *b)
     c[i] = a[i] + b[i];
 }
 
-__global__ void GenerateParticles(Particle* D_in, Particle* C_out, curandState* states, Vec2 x_range, Vec2 y_range, Vec2 heading_range) {
+__global__ void GenerateParticles(Particles* D_in, Particles* C_out, curandState* states, float2 x_range, float2 y_range, float2 heading_range) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     curand_init(tid, 0, 0, &states[tid]);
@@ -44,7 +58,7 @@ __global__ void GenerateParticles(Particle* D_in, Particle* C_out, curandState* 
 //# def predict(particles, u, std, dt=1.):
 //# """ move according to control input u (heading change, velocity)
 //# with noise Q (std heading change, std velocity)`"""
-__global__ void Predict(Particle* D_in, Particle* C_out, curandState* states, float* u, float* std, float dt) {
+__global__ void Predict(Particles* D_in, Particles* C_out, curandState* states, float* u, float* std, float dt) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     dt = 1.0f;
 
@@ -67,12 +81,100 @@ __global__ void Predict(Particle* D_in, Particle* C_out, curandState* states, fl
     C_out->heading[tid] = heading;
 }
 
+/*
+ *  Device function: block parallel reduction based on warp unrolling
+ */
+__device__ void blockWarpUnroll(float* thisBlock, int blockDim, uint tid) {
+    // in-place reduction in global memory
+    for (int stride = blockDim / 2; stride > 32; stride >>= 1) {
+        if (tid < stride)
+            thisBlock[tid] += thisBlock[tid + stride];
+
+        // synchronize within threadblock
+        __syncthreads();
+    }
+
+    // unrolling warp
+    if (tid < 32) {
+        volatile float* vmem = thisBlock;
+        vmem[tid] += vmem[tid + 32];
+        vmem[tid] += vmem[tid + 16];
+        vmem[tid] += vmem[tid + 8];
+        vmem[tid] += vmem[tid + 4];
+        vmem[tid] += vmem[tid + 2];
+        vmem[tid] += vmem[tid + 1];
+    }
+}
+
+__global__ void Norm_BlockUnroll8(float* in, float* out, float add, ulong n) {
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // boundary check
+    if (idx >= n)
+        return;
+
+    // convert global data pointer to the local pointer of this block
+    float* thisBlock = in + blockIdx.x * blockDim.x * 8;
+
+    float a = 0.0f;
+    float temp = 0.0f;
+
+    // unrolling 8 blocks
+    if (idx + 7 * blockDim.x < n) {
+        for (int i = 0; i < 8; i++) {
+            temp = in[idx + i * blockDim.x];
+            temp += add;
+            a += temp * temp;
+        }
+        in[idx] = a;
+    }
+
+    __syncthreads();
+
+    // block parall. reduction based on warp unrolling 
+    blockWarpUnroll(thisBlock, blockDim.x, tid);
+
+    // write result for this block to global mem
+    if (tid == 0)
+        out[blockIdx.x] = thisBlock[0];
+}
+
 //# def update(particles, weights, z, R, landmarks):
-__global__ void Update(Particle* particles, Particle* C_out, float* weights, float* z, float* landmarks, int numberOfLandmarks, float R) {
+__global__ void Update(float2 norm, Particles* particles, Particles* C_out, float* weights, float* z, float* landmarks, int numberOfLandmarks, float R) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // boundary check
+    if (tid >= DIM)
+        return;
+
     //# weights init as ones / N
 
+    float norm_x = 0.0f;
+    float norm_y = 0.0f;
+    float a = 0.0f;
+
+    a = particles->x[tid];
+    a = a * a;
+    norm_x += a;
+    
+    a = particles->y[tid];
+    a = a * a;
+    norm_y += a;
+
+    // // Frobenius norm or Euclidean norm  along II axis
+    // c = np.array([[ 1, 2, 3],
+    /*              [-1, 1, 4]])
+        LA.norm(c, axis = 0)
+        array([1.41421356, 2.23606798, 5.])
+        LA.norm(c, axis = 1)
+        array([3.74165739, 4.24264069])*/
+
     //for i, landmark in enumerate(landmarks) :
-    //    distance = np.linalg.norm(particles[:, 0 : 2] /*Fist 2 dim*/ - landmark, axis = 1) // Frobenius norm or Euclidean norm
+    //    distance = np.linalg.norm(particles[:, 0 : 2] /*Fist 2 dim*/ - landmark, axis = 1) 
+
+    
+
     //    weights *= scipy.stats.norm(distance, R).pdf(z[i]) // norm.pdf(x) = exp(-x**2/2)/sqrt(2*pi)
 
 
@@ -85,7 +187,7 @@ __global__ void Update(Particle* particles, Particle* C_out, float* weights, flo
 
 int main()
 {
-    Particle p;
+    Particles p;
 
     CreateParticleDim(&p, DIM);
 
@@ -106,7 +208,7 @@ int main()
     return 0;
 }
 
-cudaError_t particleFilter(Particle* p) {
+cudaError_t particleFilter(Particles* p) {
     cudaError_t cudaStatus;
     
     //// Choose which GPU to run on, change this on a multi-GPU system.
@@ -116,7 +218,7 @@ cudaError_t particleFilter(Particle* p) {
         goto Error;
     }
 
-    Particle d_p;
+    Particles d_p;
 
     //CHECK(cudaMalloc((void**)&d_p.x, DIM * sizeof(float)));
     //CHECK(cudaMemcpy(d_p.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice));
@@ -206,6 +308,170 @@ Error:
     return cudaStatus;
 }
 
+cudaError_t euclideanNorm(Particles* p, float2* norm, float2* landmark) {
+    cudaError_t cudaStatus;
+
+    //// Choose which GPU to run on, change this on a multi-GPU system.
+    cudaStatus = cudaSetDevice(0);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
+        goto Error;
+    }
+
+    Particles d_p;
+
+    //CHECK(cudaMalloc((void**)&d_p.x, DIM * sizeof(float)));
+    //CHECK(cudaMemcpy(d_p.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    //CHECK(cudaMalloc((void**)&d_p.y, DIM * sizeof(float)));
+    //CHECK(cudaMemcpy(d_p.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    //CHECK(cudaMalloc((void**)&d_p.weights, DIM * sizeof(float)));
+    //CHECK(cudaMemcpy(d_p.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    //CHECK(cudaMalloc((void**)&d_p.heading, DIM * sizeof(float)));
+    //CHECK(cudaMemcpy(d_p.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice));
+
+    cudaStatus = cudaMalloc((void**)&d_p.x, DIM * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(d_p.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&d_p.y, DIM * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(d_p.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&d_p.heading, DIM * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(d_p.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&d_p.weights, DIM * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(d_p.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    // OUTPUT for Device
+    Particles d_out;
+    cudaStatus = cudaMalloc((void**)&d_out.x, DIM * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(d_out.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&d_out.y, DIM * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(d_out.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&d_out.heading, DIM * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(d_out.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&d_out.weights, DIM * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(d_out.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+
+    Particles p_norm;
+
+    CreateParticleDim(&p_norm, DIM);
+
+    // Call the Kernel for Norm on X axis
+    Norm_BlockUnroll8<<<NUMBLOCKS / 8, BLOCKSIZE >>>(d_p.x, d_out.x, -landmark.x, N);
+
+    // Check for any errors launching the kernel
+    cudaStatus = cudaGetLastError();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "Norm launch failed: %s\n", cudaGetErrorString(cudaStatus));
+        goto Error;
+    }
+    
+    cudaStatus = cudaDeviceSynchronize();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching NormKernel!\n", cudaStatus);
+        goto Error;
+    }
+
+    cudaStatus = cudaMemcpy(p_norm.x, d_out.x, DIM * sizeof(float), cudaMemcpyDeviceToHost);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    // Sum on CPU the last elements
+    for (uint i = 0; i < NUMBLOCKS / 8; i++) {
+        norm->x += p_norm.x[i];
+    }
+
+    // Call the Kernel for Norm on Y axis
+    Norm_BlockUnroll8 << <NUMBLOCKS / 8, BLOCKSIZE >> > (d_p.y, d_out.y, -landmark.y, N);
+    // Sum on CPU the last elements
+
+Error:
+    cudaFree(d_p.x);
+    cudaFree(d_p.y);
+    cudaFree(d_p.heading);
+    cudaFree(d_p.weights);
+    cudaFree(d_out.x);
+    cudaFree(d_out.y);
+    cudaFree(d_out.heading);
+    cudaFree(d_out.weights);
+    free(p_norm.x);
+    free(p_norm.y);
+    free(p_norm.heading);
+    free(p_norm.weights);
+
+    return cudaStatus;
+}
+
 // Helper function for using CUDA to add vectors in parallel.
 cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
 {
@@ -285,3 +551,4 @@ Error:
     
     return cudaStatus;
 }
+
