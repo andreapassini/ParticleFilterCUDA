@@ -9,11 +9,6 @@ typedef struct Particles {
     float* weights;
 };
 
-typedef struct float2 {
-    float x;
-    float y;
-};
-
 typedef struct floats2 {
     float* x;
     float* y;
