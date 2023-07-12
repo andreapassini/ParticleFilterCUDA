@@ -320,140 +320,46 @@ cudaError_t euclideanNorm(Particles* p, float2* norm, float2* landmark) {
 
     Particles d_p;
 
-    //CHECK(cudaMalloc((void**)&d_p.x, DIM * sizeof(float)));
-    //CHECK(cudaMemcpy(d_p.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    //CHECK(cudaMalloc((void**)&d_p.y, DIM * sizeof(float)));
-    //CHECK(cudaMemcpy(d_p.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    //CHECK(cudaMalloc((void**)&d_p.weights, DIM * sizeof(float)));
-    //CHECK(cudaMemcpy(d_p.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    //CHECK(cudaMalloc((void**)&d_p.heading, DIM * sizeof(float)));
-    //CHECK(cudaMemcpy(d_p.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_p.x, DIM * sizeof(float)));
+    CHECK(cudaMemcpy(d_p.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_p.y, DIM * sizeof(float)));
+    CHECK(cudaMemcpy(d_p.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_p.weights, DIM * sizeof(float)));
+    CHECK(cudaMemcpy(d_p.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_p.heading, DIM * sizeof(float)));
+    CHECK(cudaMemcpy(d_p.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice));
 
-    cudaStatus = cudaMalloc((void**)&d_p.x, DIM * sizeof(float));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-    cudaStatus = cudaMemcpy(d_p.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&d_p.y, DIM * sizeof(float));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-    cudaStatus = cudaMemcpy(d_p.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&d_p.heading, DIM * sizeof(float));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-    cudaStatus = cudaMemcpy(d_p.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&d_p.weights, DIM * sizeof(float));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-    cudaStatus = cudaMemcpy(d_p.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
 
     // OUTPUT for Device
     Particles d_out;
-    cudaStatus = cudaMalloc((void**)&d_out.x, DIM * sizeof(float));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-    cudaStatus = cudaMemcpy(d_out.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&d_out.y, DIM * sizeof(float));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-    cudaStatus = cudaMemcpy(d_out.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&d_out.heading, DIM * sizeof(float));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-    cudaStatus = cudaMemcpy(d_out.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&d_out.weights, DIM * sizeof(float));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-    cudaStatus = cudaMemcpy(d_out.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
+    CHECK(cudaMalloc((void**)&d_out.x, DIM * sizeof(float)));
+    CHECK(cudaMemcpy(d_out.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_out.y, DIM * sizeof(float)));
+    CHECK(cudaMemcpy(d_out.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_out.weights, DIM * sizeof(float)));
+    CHECK(cudaMemcpy(d_out.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_out.heading, DIM * sizeof(float)));
+    CHECK(cudaMemcpy(d_out.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice));
 
 
     Particles p_norm;
 
     CreateParticleDim(&p_norm, DIM);
 
-    // Call the Kernel for Norm on X axis
     Norm_BlockUnroll8<<<NUMBLOCKS / 8, BLOCKSIZE >>>(d_p.x, d_out.x, -landmark.x, N);
+    Norm_BlockUnroll8<<<NUMBLOCKS / 8, BLOCKSIZE >>>(d_p.y, d_out.y, -landmark.y, N);
 
-    // Check for any errors launching the kernel
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "Norm launch failed: %s\n", cudaGetErrorString(cudaStatus));
-        goto Error;
-    }
+    CHECK(cudaDeviceSynchronize());
+    CHECK(cudaGetLastError());
     
-    cudaStatus = cudaDeviceSynchronize();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching NormKernel!\n", cudaStatus);
-        goto Error;
-    }
-
-    cudaStatus = cudaMemcpy(p_norm.x, d_out.x, DIM * sizeof(float), cudaMemcpyDeviceToHost);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
+    CHECK(cudaMemcpy(p_norm.x, d_out.x, DIM * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(p_norm.y, d_out.y, DIM * sizeof(float), cudaMemcpyDeviceToHost));
 
     // Sum on CPU the last elements
     for (uint i = 0; i < NUMBLOCKS / 8; i++) {
         norm->x += p_norm.x[i];
+        norm->y += p_norm.y[i];
     }
-
-    // Call the Kernel for Norm on Y axis
-    Norm_BlockUnroll8 << <NUMBLOCKS / 8, BLOCKSIZE >> > (d_p.y, d_out.y, -landmark.y, N);
-    // Sum on CPU the last elements
 
 Error:
     cudaFree(d_p.x);
