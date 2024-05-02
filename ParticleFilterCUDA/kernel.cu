@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <cmath>
 #include <string>
+#include <time.h>
 
 #define PI 3.141592f
 
@@ -27,7 +28,6 @@
 #define BLOCKSIZE 1024  // block dim 1D
 #define NUMBLOCKS 1024  // grid dim 1D 
 #define N (NUMBLOCKS * BLOCKSIZE)
-
 
 __global__ void addKernel(int *c, const int *a, const int *b)
 {
@@ -148,7 +148,7 @@ __global__ void Update(float2 norm, Particles* particles, Particles* C_out, floa
 }
 
 
-void particleFilter(Particles* p) {
+void particleFilterGPU(Particles* p) {
 
     Particles d_p;
 
@@ -181,6 +181,29 @@ void particleFilter(Particles* p) {
     cudaFree(d_out.y);
     cudaFree(d_out.heading);
     cudaFree(d_out.weights);
+}
+
+void particleFilterCPU(Particles* p) {
+    clock_t start, stop;
+    double timer;
+
+    printf(" - particleFilterC - \n");
+
+    unsigned int dim = p->size;
+
+    printf("number of particles: %d \n", dim);
+
+    start = clock();
+
+    // Start of calculation
+     
+
+
+    // End of calculation
+
+    stop = clock();
+    timer = ((double)(stop - start)) / (double)CLOCKS_PER_SEC;
+    printf("\n\n Total execution time: %9.4f sec", timer);
 }
 
 void euclideanNorm(Particles* p, float2* norm, float2* landmark) {
@@ -262,7 +285,9 @@ int main()
 
     CreateParticleDim(&p, DIM);
 
-    particleFilter(&p);
+    //particleFilterGPU(&p);
+
+    particleFilterCPU(&p);
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.

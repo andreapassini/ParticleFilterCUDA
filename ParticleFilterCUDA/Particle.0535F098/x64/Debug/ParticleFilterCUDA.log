@@ -34,6 +34,7 @@ E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\Particle
      ^
   
   kernel.cu
-  tmpxft_00002944_00000000-7_kernel.compute_52.cudafe1.cpp
+  tmpxft_00000300_00000000-7_kernel.compute_52.cudafe1.cpp
   device_functions.h is an internal header file and must not be used directly.  This file will be removed in a future CUDA release.  Please use cuda_runtime_api.h or cuda_runtime.h instead.
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\kernel.cu(199): warning C4996: '_sleep': This function or variable has been superceded by newer library or operating system functionality. Consider using Sleep instead. See online help for details.
   ParticleFilterCUDA.vcxproj -> E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\x64\Debug\ParticleFilterCUDA.exe

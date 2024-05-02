@@ -7,16 +7,16 @@
       "RelativeMoniker": "D:0:0:{0535F098-C204-49DA-B66B-F5BA4CDEC6B2}|ParticleFilterCUDA.vcxproj|solutionrelative:kernel.cu||{8B382828-6202-11D1-8870-0000F87579D2}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{0535F098-C204-49DA-B66B-F5BA4CDEC6B2}|ParticleFilterCUDA.vcxproj|E:\\andrea\\UNI\\MAGISTRALE\\ANNO2\\GPU_COMPUTING\\Project\\ParticleFilterCUDA\\ParticleFilterCUDA\\Particle.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
-      "RelativeMoniker": "D:0:0:{0535F098-C204-49DA-B66B-F5BA4CDEC6B2}|ParticleFilterCUDA.vcxproj|solutionrelative:Particle.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
-    },
-    {
       "AbsoluteMoniker": "D:0:0:{0535F098-C204-49DA-B66B-F5BA4CDEC6B2}|ParticleFilterCUDA.vcxproj|E:\\andrea\\UNI\\MAGISTRALE\\ANNO2\\GPU_COMPUTING\\Project\\ParticleFilterCUDA\\ParticleFilterCUDA\\common.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{0535F098-C204-49DA-B66B-F5BA4CDEC6B2}|ParticleFilterCUDA.vcxproj|solutionrelative:common.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{0535F098-C204-49DA-B66B-F5BA4CDEC6B2}|ParticleFilterCUDA.vcxproj|E:\\andrea\\UNI\\MAGISTRALE\\ANNO2\\GPU_COMPUTING\\Project\\ParticleFilterCUDA\\ParticleFilterCUDA\\Particle.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{0535F098-C204-49DA-B66B-F5BA4CDEC6B2}|ParticleFilterCUDA.vcxproj|solutionrelative:Particle.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{0535F098-C204-49DA-B66B-F5BA4CDEC6B2}|ParticleFilterCUDA.vcxproj|E:\\andrea\\UNI\\MAGISTRALE\\ANNO2\\GPU_COMPUTING\\Project\\ParticleFilterCUDA\\ParticleFilterCUDA\\Particle.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{0535F098-C204-49DA-B66B-F5BA4CDEC6B2}|ParticleFilterCUDA.vcxproj|solutionrelative:Particle.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     }
   ],
   "DocumentGroupContainers": [
@@ -30,7 +30,7 @@
           "Children": [
             {
               "$type": "Document",
-              "DocumentIndex": 3,
+              "DocumentIndex": 2,
               "Title": "Particle.h",
               "DocumentMoniker": "E:\\andrea\\UNI\\MAGISTRALE\\ANNO2\\GPU_COMPUTING\\Project\\ParticleFilterCUDA\\ParticleFilterCUDA\\Particle.h",
               "RelativeDocumentMoniker": "Particle.h",
@@ -43,26 +43,26 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 2,
+              "DocumentIndex": 1,
               "Title": "common.h",
               "DocumentMoniker": "E:\\andrea\\UNI\\MAGISTRALE\\ANNO2\\GPU_COMPUTING\\Project\\ParticleFilterCUDA\\ParticleFilterCUDA\\common.h",
               "RelativeDocumentMoniker": "common.h",
               "ToolTip": "E:\\andrea\\UNI\\MAGISTRALE\\ANNO2\\GPU_COMPUTING\\Project\\ParticleFilterCUDA\\ParticleFilterCUDA\\common.h",
               "RelativeToolTip": "common.h",
-              "ViewState": "AQIAAAAAAAAAAAAAAAAAABAAAAABAAAA",
+              "ViewState": "AQIAADwAAAAAAAAAAAAAAAAAAAAAAAAA",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000680|",
               "WhenOpened": "2023-07-12T09:47:45.496Z",
               "EditorCaption": ""
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
+              "DocumentIndex": 3,
               "Title": "Particle.cpp",
               "DocumentMoniker": "E:\\andrea\\UNI\\MAGISTRALE\\ANNO2\\GPU_COMPUTING\\Project\\ParticleFilterCUDA\\ParticleFilterCUDA\\Particle.cpp",
               "RelativeDocumentMoniker": "Particle.cpp",
               "ToolTip": "E:\\andrea\\UNI\\MAGISTRALE\\ANNO2\\GPU_COMPUTING\\Project\\ParticleFilterCUDA\\ParticleFilterCUDA\\Particle.cpp",
               "RelativeToolTip": "Particle.cpp",
-              "ViewState": "AQIAAAAAAAAAAAAAAAAAAAQAAAAvAAAA",
+              "ViewState": "AQIAAAAAAAAAAAAAAAAAAAIAAAAWAAAA",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
               "WhenOpened": "2023-07-12T09:17:59.829Z",
               "EditorCaption": ""
@@ -75,7 +75,7 @@
               "RelativeDocumentMoniker": "kernel.cu",
               "ToolTip": "E:\\andrea\\UNI\\MAGISTRALE\\ANNO2\\GPU_COMPUTING\\Project\\ParticleFilterCUDA\\ParticleFilterCUDA\\kernel.cu",
               "RelativeToolTip": "kernel.cu",
-              "ViewState": "AQIAAKsAAAAAAAAAAAAAAFAAAAAAAAAA",
+              "ViewState": "AQIAAKsAAAAAAAAAAAAAAKsAAABDAAAA",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001001|",
               "WhenOpened": "2023-07-10T08:56:39.073Z",
               "EditorCaption": ""
