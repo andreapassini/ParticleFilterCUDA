@@ -1,0 +1,39 @@
+﻿  Compiling CUDA source file kernel.cu...
+  
+  E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA>"E:\programmi\CUDA_Toolkit\NVIDIA GPU COMPUTING Toolkit\CUDA\v12.1\bin\nvcc.exe" -gencode=arch=compute_52,code=\"sm_52,compute_52\" --use-local-env -ccbin "E:\programmi\VisualStudio\Editor\VC\Tools\MSVC\14.32.31326\bin\HostX64\x64" -x cu   -I"E:\programmi\CUDA_Toolkit\NVIDIA GPU COMPUTING Toolkit\CUDA\v12.1\include" -I"E:\programmi\CUDA_Toolkit\NVIDIA GPU COMPUTING Toolkit\CUDA\v12.1\include"  -G   --keep-dir x64\Debug  -maxrregcount=0   --machine 64 --compile -cudart static -arch=sm_70 -g  -DWIN32 -DWIN64 -D_DEBUG -D_CONSOLE -D_MBCS -Xcompiler "/EHsc /W3 /nologo /Od /FS /Zi /RTC1 /MDd " -Xcompiler "/Fdx64\Debug\vc143.pdb" -o E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\x64\Debug\kernel.cu.obj "E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\kernel.cu" 
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.h(10): warning #375-D: declaration requires a typedef name
+    };
+     ^
+  
+  Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+  
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.h(15): warning #375-D: declaration requires a typedef name
+    };
+     ^
+  
+  device_functions.h is an internal header file and must not be used directly.  This file will be removed in a future CUDA release.  Please use cuda_runtime_api.h or cuda_runtime.h instead.
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.h(10): warning #375-D: declaration requires a typedef name
+    };
+     ^
+  
+  Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+  
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.h(15): warning #375-D: declaration requires a typedef name
+    };
+     ^
+  
+  device_functions.h is an internal header file and must not be used directly.  This file will be removed in a future CUDA release.  Please use cuda_runtime_api.h or cuda_runtime.h instead.
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.h(10): warning #375-D: declaration requires a typedef name
+    };
+     ^
+  
+  Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+  
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.h(15): warning #375-D: declaration requires a typedef name
+    };
+     ^
+  
+  kernel.cu
+  tmpxft_00002614_00000000-7_kernel.compute_52.cudafe1.cpp
+  device_functions.h is an internal header file and must not be used directly.  This file will be removed in a future CUDA release.  Please use cuda_runtime_api.h or cuda_runtime.h instead.
+  ParticleFilterCUDA.vcxproj -> E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\x64\Debug\ParticleFilterCUDA.exe

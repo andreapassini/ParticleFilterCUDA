@@ -29,10 +29,6 @@
 #define N (NUMBLOCKS * BLOCKSIZE)
 
 
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
-
-
-
 __global__ void addKernel(int *c, const int *a, const int *b)
 {
     int i = threadIdx.x;
@@ -43,9 +39,9 @@ __global__ void GenerateParticles(Particles* D_in, Particles* C_out, curandState
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     curand_init(tid, 0, 0, &states[tid]);
-    float pos_x = x_range.x + ((x_range.y - x_range.x) * curand_uniform(&states[tid]));
+    float pos_x = x_range.x + ((x_range.y - x_range.x) * curand_uniform(&states[tid])); // Lerp
     float pos_y = y_range.x + ((y_range.y - y_range.x) * curand_uniform(&states[tid]));
-    float heading = curand_uniform(&states[tid]);
+    float heading = heading_range.x + ((heading_range.y - heading_range.x) * curand_uniform(&states[tid]));
     heading = std::fmod(heading, 2 * PI);
 
     C_out->x[tid] = pos_x;
@@ -64,7 +60,7 @@ __global__ void Predict(Particles* D_in, Particles* C_out, curandState* states, 
 
     //# update heading
     float heading = D_in->heading[tid];
-    heading += u[0] + curand_normal(&states[tid]);
+    heading += u[0] + (curand_normal(&states[tid]) * std[1]);
     heading = std::fmod(heading, 2 * PI);
         
     //# move in the (noisy) commanded direction
@@ -145,31 +141,12 @@ __global__ void Update(float2 norm, Particles* particles, Particles* C_out, floa
     // boundary check
     if (tid >= DIM)
         return;
-
-    //    weights *= scipy.stats.norm(distance, R).pdf(z[i]) // norm.pdf(x) = exp(-x**2/2)/sqrt(2*pi)
-
-
-    //weights += 1.e-300      # avoid round - off to zero
-    //weights /= sum(weights) # normalize
+    
+    //  distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
+    //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
 
 }
 
-void particleFilter(Particles* p);
-
-int main()
-{
-    Particles p;
-
-    CreateParticleDim(&p, DIM);
-
-    particleFilter(&p);
-
-    // cudaDeviceReset must be called before exiting in order for profiling and
-    // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    CHECK(cudaDeviceReset());
-
-    return 0;
-}
 
 void particleFilter(Particles* p) {
 
@@ -194,7 +171,6 @@ void particleFilter(Particles* p) {
     CHECK(cudaMemcpy(d_out.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice));
     CHECK(cudaMalloc((void**)&d_out.heading, DIM * sizeof(float)));
     CHECK(cudaMemcpy(d_out.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice));
-
 
 
     cudaFree(d_p.x);
@@ -237,8 +213,8 @@ void euclideanNorm(Particles* p, float2* norm, float2* landmark) {
 
     CreateParticleDim(&p_norm, DIM);
 
-    Norm_BlockUnroll8<<<NUMBLOCKS / 8, BLOCKSIZE >>>(d_p.x, d_out.x, -landmark->x, N);  // ERRROR at <<< can be simply ignored
-    Norm_BlockUnroll8<<<NUMBLOCKS / 8, BLOCKSIZE >>>(d_p.y, d_out.y, -landmark->y, N);
+    Norm_BlockUnroll8<<<NUMBLOCKS / 8, BLOCKSIZE>>>(d_p.x, d_out.x, -landmark->x, N);  // ERRROR at <<< can be simply ignored
+    Norm_BlockUnroll8<<<NUMBLOCKS / 8, BLOCKSIZE>>>(d_p.y, d_out.y, -landmark->y, N);
 
     CHECK(cudaDeviceSynchronize());
     CHECK(cudaGetLastError());
@@ -265,6 +241,36 @@ void euclideanNorm(Particles* p, float2* norm, float2* landmark) {
     free(p_norm.heading);
     free(p_norm.weights);
 }
+
+void updateStep() {
+
+    //for i, landmark in enumerate(landmarks) :
+    //    distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
+    //    weights *= scipy.stats.norm(distance, R).pdf(z[i])
+    
+    // Euclidean norm => Kernel
+    // For => Kernel for Update
+
+
+    //weights += 1.e-300      # avoid round - off to zero
+    //weights /= sum(weights) # normalize
+}
+
+int main()
+{
+    Particles p;
+
+    CreateParticleDim(&p, DIM);
+
+    particleFilter(&p);
+
+    // cudaDeviceReset must be called before exiting in order for profiling and
+    // tracing tools such as Nsight and Visual Profiler to show complete traces.
+    CHECK(cudaDeviceReset());
+
+    return 0;
+}
+
 
 //// Helper function for using CUDA to add vectors in parallel.
 //cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)

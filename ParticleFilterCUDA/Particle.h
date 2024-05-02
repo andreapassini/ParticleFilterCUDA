@@ -7,6 +7,7 @@ typedef struct Particles {
     float* y;
     float* heading;
     float* weights;
+    unsigned int size;
 };
 
 typedef struct floats2 {
