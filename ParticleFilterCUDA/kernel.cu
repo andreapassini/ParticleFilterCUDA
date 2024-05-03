@@ -29,6 +29,15 @@
 #define NUMBLOCKS 1024  // grid dim 1D 
 #define N (NUMBLOCKS * BLOCKSIZE)
 
+#define MinX 0.0f
+#define MaxX 1000.0f
+
+#define MinY 0.0f
+#define MaxY 1000.0f
+
+#define MinHeading 0.0f
+#define MaxHeading 3.0f
+
 __global__ void addKernel(int *c, const int *a, const int *b)
 {
     int i = threadIdx.x;
@@ -73,6 +82,28 @@ __global__ void Predict(Particles* D_in, Particles* C_out, curandState* states, 
     C_out->x[tid] = pos_x;
     C_out->y[tid] = pos_y;
     C_out->heading[tid] = heading;
+}
+
+void PredictCPU(Particles* p, Float2 u, Float2 std, float dt) {
+    //""" move according to control input u (heading change, velocity)
+    //    with noise Q(std heading change, std velocity)`"""
+    srand((unsigned int)time(NULL));   // Initialization, should only be called once.
+    float r = 0.0f;
+
+    for (int i = 0; i < p->size; i++) {
+        r = ((float)rand() / (float)(RAND_MAX));      // rand Returns a pseudo-random integer between 0 and RAND_MAX.
+
+        // update heading
+        p->heading[i] += u.x + (r * std.x);
+        p->heading[i] = fmodf(p->heading[i], 2.0f * PI);
+
+        float dist = (u.y * dt) + (r * std.y);
+
+        // move in the(noisy) commanded direction
+        p->x[i] += cos(p->heading[i]) * dist;
+        p->y[i] += sin(p->heading[i]) * dist;
+    }
+
 }
 
 /*
@@ -196,8 +227,8 @@ void particleFilterCPU(Particles* p) {
     start = clock();
 
     // Start of calculation
-     
 
+    PredictCPU(p);
 
     // End of calculation
 
@@ -234,7 +265,7 @@ void euclideanNorm(Particles* p, float2* norm, float2* landmark) {
 
     Particles p_norm;
 
-    CreateParticleDim(&p_norm, DIM);
+    Create_Particles(&p_norm, DIM);
 
     Norm_BlockUnroll8<<<NUMBLOCKS / 8, BLOCKSIZE>>>(d_p.x, d_out.x, -landmark->x, N);  // ERRROR at <<< can be simply ignored
     Norm_BlockUnroll8<<<NUMBLOCKS / 8, BLOCKSIZE>>>(d_p.y, d_out.y, -landmark->y, N);
@@ -281,9 +312,21 @@ void updateStep() {
 
 int main()
 {
+    Float2 xRange;
+    xRange.x = MinX;
+    xRange.y = MaxX;
+
+    Float2 yRange;
+    yRange.x = MinY;
+    yRange.y = MaxY;
+
+    Float2 headingRange;
+    headingRange.x = MinHeading;
+    headingRange.y = MaxHeading;
+
     Particles p;
 
-    CreateParticleDim(&p, DIM);
+    CreateAndRandomInitialize_Particles(&p, DIM, &xRange, &yRange, &headingRange);
 
     //particleFilterGPU(&p);
 

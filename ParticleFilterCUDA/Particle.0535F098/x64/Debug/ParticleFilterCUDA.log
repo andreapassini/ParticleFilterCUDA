@@ -34,7 +34,21 @@ E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\Particle
      ^
   
   kernel.cu
-  tmpxft_00000300_00000000-7_kernel.compute_52.cudafe1.cpp
+  tmpxft_00002580_00000000-7_kernel.compute_52.cudafe1.cpp
   device_functions.h is an internal header file and must not be used directly.  This file will be removed in a future CUDA release.  Please use cuda_runtime_api.h or cuda_runtime.h instead.
-E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\kernel.cu(199): warning C4996: '_sleep': This function or variable has been superceded by newer library or operating system functionality. Consider using Sleep instead. See online help for details.
+  Particle.cpp
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.h(11,2): warning C4091: 'typedef ': ignored on left of 'Particles' when no variable is declared
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.h(16,2): warning C4091: 'typedef ': ignored on left of 'Float2' when no variable is declared
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.cpp(16,15): warning C4244: '=': conversion from 'float' to 'unsigned int', possible loss of data
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.cpp(17,31): warning C4244: 'argument': conversion from 'float' to 'size_t', possible loss of data
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.cpp(18,31): warning C4244: 'argument': conversion from 'float' to 'size_t', possible loss of data
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.cpp(19,37): warning C4244: 'argument': conversion from 'float' to 'size_t', possible loss of data
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.cpp(20,37): warning C4244: 'argument': conversion from 'float' to 'size_t', possible loss of data
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.cpp(24,15): warning C4244: '=': conversion from 'float' to 'unsigned int', possible loss of data
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.cpp(25,31): warning C4244: 'argument': conversion from 'float' to 'size_t', possible loss of data
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.cpp(26,31): warning C4244: 'argument': conversion from 'float' to 'size_t', possible loss of data
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.cpp(27,37): warning C4244: 'argument': conversion from 'float' to 'size_t', possible loss of data
+E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\Particle.cpp(28,37): warning C4244: 'argument': conversion from 'float' to 'size_t', possible loss of data
+     Creating library E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\x64\Debug\ParticleFilterCUDA.lib and object E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\x64\Debug\ParticleFilterCUDA.exp
+LINK : warning LNK4098: defaultlib 'LIBCMT' conflicts with use of other libs; use /NODEFAULTLIB:library
   ParticleFilterCUDA.vcxproj -> E:\andrea\UNI\MAGISTRALE\ANNO2\GPU_COMPUTING\Project\ParticleFilterCUDA\ParticleFilterCUDA\x64\Debug\ParticleFilterCUDA.exe

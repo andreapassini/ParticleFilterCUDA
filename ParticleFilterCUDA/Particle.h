@@ -10,9 +10,12 @@ typedef struct Particles {
     unsigned int size;
 };
 
-typedef struct floats2 {
-    float* x;
-    float* y;
+typedef struct Float2 {
+    float x;
+    float y;
 };
 
-void CreateParticleDim(Particles* p, float dim);
+void Create_Particles(Particles* p, float dim);
+void CreateAndRandomInitialize_Particles(Particles* p, float dim, Float2* xRange, Float2* yRange, Float2* headingRange);
+
+float Lerp(float A, float B, float factor);
