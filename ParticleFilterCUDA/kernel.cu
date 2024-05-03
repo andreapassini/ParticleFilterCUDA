@@ -84,7 +84,7 @@ __global__ void Predict(Particles* D_in, Particles* C_out, curandState* states, 
     C_out->heading[tid] = heading;
 }
 
-void PredictCPU(Particles* p, Float2 u, Float2 std, float dt) {
+void PredictCPU(Particles* p, const Float2* const u, const Float2* const std, float dt) {
     //""" move according to control input u (heading change, velocity)
     //    with noise Q(std heading change, std velocity)`"""
     srand((unsigned int)time(NULL));   // Initialization, should only be called once.
@@ -94,16 +94,15 @@ void PredictCPU(Particles* p, Float2 u, Float2 std, float dt) {
         r = ((float)rand() / (float)(RAND_MAX));      // rand Returns a pseudo-random integer between 0 and RAND_MAX.
 
         // update heading
-        p->heading[i] += u.x + (r * std.x);
+        p->heading[i] += u->x + (r * std->x);
         p->heading[i] = fmodf(p->heading[i], 2.0f * PI);
 
-        float dist = (u.y * dt) + (r * std.y);
+        float dist = (u->y * dt) + (r * std->y);
 
         // move in the(noisy) commanded direction
         p->x[i] += cos(p->heading[i]) * dist;
         p->y[i] += sin(p->heading[i]) * dist;
     }
-
 }
 
 /*
@@ -227,8 +226,11 @@ void particleFilterCPU(Particles* p) {
     start = clock();
 
     // Start of calculation
+    Float2 u;
+    Float2 std;
+    float dt = 0.1f;
 
-    PredictCPU(p);
+    PredictCPU(p, &u, &std, dt);
 
     // End of calculation
 
