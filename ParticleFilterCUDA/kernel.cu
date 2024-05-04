@@ -108,14 +108,33 @@ void PredictCPU(Particles* p, const Float2* const u, const Float2* const std, fl
 
 
 //def update(particles, weights, z, R, landmarks) :
-//    for i, landmark in enumerate(landmarks) :
-//        distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
-//        weights *= scipy.stats.norm(distance, R).pdf(z[i])
+//  for i, landmark in enumerate(landmarks) :
+//      distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
+//      weights *= scipy.stats.norm(distance, R).pdf(z[i])
 
-//        weights += 1.e-300      # avoid round - off to zero
-//        weights /= sum(weights) # normalize
-void UpdateCPU(Particles* p, ) {
+//  weights += 1.e-300      # avoid round - off to zero
+//  weights /= sum(weights) # normalize
+void UpdateCPU(Particles* p, const float* const z, const float R, const Float2* const landmarks) {
+    int size = p->size;
 
+    for (int i = 0; i < size; i++) {
+        float distance = norm;
+        float pdf;
+        
+        for (int j = 0; j < size; j++) {
+            p->weights[j] *= pdf;
+        }
+    }
+
+    float sum = 0.0f;
+    for (int i = 0; i < size; i++) {
+        p->weights[i] *= FLT_EPSILON; // avoid round - off to zero
+        sum += p->weights[i];
+    }
+
+    for (int i = 0; i < size; i++) {
+        p->weights[i] /= sum; // normalize
+    }
 
 }
 
