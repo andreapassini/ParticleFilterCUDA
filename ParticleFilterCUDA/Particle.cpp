@@ -47,4 +47,14 @@ void CreateAndRandomInitialize_Particles(Particles* p, float dim, Float2* xRange
     }
 }
 
+void PrintParticle(const Particles* const p, int i)
+{
+    printf("particle: %d, \n\t x: %f \n\t y: %f \n\t heading: %f \n\t weight: %f\n", 
+        i, 
+        p->x[i],
+        p->y[i],
+        p->heading[i],
+        p->weights[i]);
+}
+
 

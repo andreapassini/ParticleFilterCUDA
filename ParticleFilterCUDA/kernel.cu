@@ -88,10 +88,9 @@ void PredictCPU(Particles* p, const Float2* const u, const Float2* const std, fl
     //""" move according to control input u (heading change, velocity)
     //    with noise Q(std heading change, std velocity)`"""
     srand((unsigned int)time(NULL));   // Initialization, should only be called once.
-    float r = 0.0f;
 
     for (int i = 0; i < p->size; i++) {
-        r = ((float)rand() / (float)(RAND_MAX));      // rand Returns a pseudo-random integer between 0 and RAND_MAX.
+        float r = ((float)rand() / (float)(RAND_MAX));      // rand Returns a pseudo-random integer between 0 and RAND_MAX.
 
         // update heading
         p->heading[i] += u->x + (r * std->x);
@@ -102,7 +101,22 @@ void PredictCPU(Particles* p, const Float2* const u, const Float2* const std, fl
         // move in the(noisy) commanded direction
         p->x[i] += cos(p->heading[i]) * dist;
         p->y[i] += sin(p->heading[i]) * dist;
+
+        //PrintParticle(p, i);
     }
+}
+
+
+//def update(particles, weights, z, R, landmarks) :
+//    for i, landmark in enumerate(landmarks) :
+//        distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
+//        weights *= scipy.stats.norm(distance, R).pdf(z[i])
+
+//        weights += 1.e-300      # avoid round - off to zero
+//        weights /= sum(weights) # normalize
+void UpdateCPU(Particles* p, ) {
+
+
 }
 
 /*
@@ -231,6 +245,8 @@ void particleFilterCPU(Particles* p) {
     float dt = 0.1f;
 
     PredictCPU(p, &u, &std, dt);
+
+    UpdateCPU();
 
     // End of calculation
 
