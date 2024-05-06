@@ -118,6 +118,29 @@ float magnitudeXY(const Particles* const p) {
     return magnitude;
 }
 
+Float2 WeightedAverage(const Floats2* const pos, const float* const weights, const int dim) {
+    Float2 avg;
+    avg.x = 0.0f;
+    avg.y = 0.0f;
+
+    // numpy implementation: avg = sum(a * weights) / sum(weights)
+
+    float sumWeights = FLT_EPSILON; // avoid div by 0
+    Float2 sumPos;
+    sumPos.x = 0.0f;
+    sumPos.y = 0.0f;
+    for (int i = 0; i < dim; i++) {
+        sumWeights += weights[i];
+        sumPos.x += pos->x[i] * weights[i];
+        sumPos.y += pos->y[i] * weights[i];
+    }
+
+    avg.x = sumPos.x / sumWeights;
+    avg.y = sumPos.y / sumWeights;
+
+    return avg;
+}
+
 void PredictCPU(Particles* const p, const Float2* const u, const Float2* const std, float dt) {
     //""" move according to control input u (heading change, velocity)
     //    with noise Q(std heading change, std velocity)`"""
@@ -153,30 +176,34 @@ void UpdateCPU(Particles* const p, const float* const z, const float R, const Fl
 
     for (int i = 0; i < size; i++) {
 
+        //  distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
         Floats2 distance;
         distance.x = (float*)malloc(size * sizeof(float));
         memcpy(distance.x, p->x, size * sizeof(float));
-
         distance.y = (float*)malloc(size * sizeof(float));
         memcpy(distance.y, p->y, size * sizeof(float));
-
-        for (int i = 0; i < size; i++) {
-            distance.x[i] -= landmarks->x[i];
-            distance.y[i] -= landmarks->y[i];
+        for (int j = 0; j < size; j++) {    // particles[:, 0 : 2] - landmark
+            distance.x[j] -= landmarks->x[i];
+            distance.y[j] -= landmarks->y[i];
+        }
+        float* distanceMagnitudes = (float*)calloc(size, sizeof(float));
+        for (int j = 0; j < size; j++) {    // np.linalg.norm
+            distanceMagnitudes[j] = magnitude(distance.x[j], distance.y[j]);
         }
 
-        float* distanceMagnitude = (float*)calloc(size, sizeof(float));
-        for (int i = 0; i < size; i++) {
-            distanceMagnitude[i] = magnitude(distance.x[i], distance.y[i]);
+        //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
+        float* normPdfs = (float*)malloc(size * sizeof(float));
+        for (int j = 0; j < size; j++) { // scipy.stats.norm(distance, R).pdf(z[i])
+            normPdfs[j] *= normpdf(z[i], distanceMagnitudes[j], R);;
+        }
+        for (int j = 0; j < size; j++) { // weights *=  // element wise multiplication
+            p->weights[j] *= normPdfs[j];
         }
 
-        float normPdf = normpdf(z[i], distanceMagnitude, R);
-
-        for (int j = 0; j < size; j++) {
-            p->weights[j] *= normPdf;
-        }
-
-        
+        delete(distance.x);
+        delete(distance.y);
+        delete(distanceMagnitudes);
+        delete(normPdfs);
     }
 
     float sum = 0.0f;
@@ -188,6 +215,40 @@ void UpdateCPU(Particles* const p, const float* const z, const float R, const Fl
     for (int i = 0; i < size; i++) {
         p->weights[i] /= sum; // normalize
     }
+}
+
+//def estimate(particles, weights) :
+//    """returns mean and variance of the weighted particles"""
+//
+//    pos = particles[:, 0 : 2]
+//    mean = np.average(pos, weights = weights, axis = 0)
+//    var = np.average((pos - mean) * *2, weights = weights, axis = 0)
+//    return mean, var
+// returns mean and variance of the weighted particles
+void EstimateCPU(const Particles* const p, Float2* const mean_out, Float2* const var_out) {
+
+    Floats2 pos;
+    pos.x = (float*)malloc(p->size * sizeof(float));
+    memcpy(pos.x, p->x, p->size * sizeof(float));
+    pos.y = (float*)malloc(p->size * sizeof(float));
+    memcpy(pos.y, p->y, p->size * sizeof(float));
+
+    float* weights = (float*)malloc(p->size * sizeof(float));
+    memcpy(weights, p->weights, p->size * sizeof(float));
+
+    // mean = np.average(pos, weights = weights, axis = 0)
+    (*mean_out) = WeightedAverage(&pos, weights, p->size);
+    // var = np.average((pos - mean) **2, weights = weights, axis = 0)
+    for (int i = 0; i < p->size; i++) {
+        pos.x[i] = (pos.x[i] - mean_out->x) * (pos.x[i] - mean_out->x);
+        pos.y[i] = (pos.y[i] - mean_out->y) * (pos.y[i] - mean_out->y);
+    }
+
+    (*var_out) = WeightedAverage(&pos, weights, p->size);;
+
+    delete(pos.x);
+    delete(pos.y);
+    delete(weights);
 }
 
 /*
@@ -317,7 +378,7 @@ void particleFilterCPU(Particles* p) {
 
     PredictCPU(p, &u, &std, dt);
 
-    UpdateCPU();
+    //UpdateCPU();
 
     // End of calculation
 
