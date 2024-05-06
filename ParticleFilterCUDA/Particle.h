@@ -15,6 +15,12 @@ typedef struct Float2 {
     float y;
 };
 
+typedef struct Floats2 {
+    float* x;
+    float* y;
+};
+
+
 void Create_Particles(Particles* p, float dim);
 void CreateAndRandomInitialize_Particles(Particles* p, float dim, Float2* xRange, Float2* yRange, Float2* headingRange);
 

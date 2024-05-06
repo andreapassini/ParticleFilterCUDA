@@ -19,6 +19,7 @@
 #include <time.h>
 
 #define PI 3.141592f
+#define PI2 2.0f * 3.141592f
 
 #define IDX(i,j,n) (i*n+j)
 #define ABS(x,y) (x-y>=0?x-y:y-x)
@@ -84,7 +85,40 @@ __global__ void Predict(Particles* D_in, Particles* C_out, curandState* states, 
     C_out->heading[tid] = heading;
 }
 
-void PredictCPU(Particles* p, const Float2* const u, const Float2* const std, float dt) {
+//  def normpdf(x, mu=0, sigma=1):
+float normpdf(const float x, const float mu = 0.0f, const float sigma = 1.0f) {
+    //  u = float((x - mu) / abs(sigma))
+    //  y = exp(-u * u / 2) / (sqrt(2 * pi) * abs(sigma))
+    //  return y
+    float u = (x - mu) / abs(sigma);
+    float y = exp(-u * u / 2) / (sqrt(PI2) * abs(sigma));
+    return y;
+}
+
+float sqrdMagnitude(const float* const X, const int dim) {
+    float sqrdMag = FLT_EPSILON;
+    for (int i = 0; i < dim; i++) {
+        sqrdMag += X[i];
+    }
+    return sqrdMag;
+}
+
+float magnitude(const float const x, const float const y) {
+    float mag = sqrt((x * x) + (y * y));
+}
+
+float magnitude(const Float2& const vec2) {
+    return magnitude(vec2.x, vec2.y);
+}
+
+float magnitudeXY(const Particles* const p) {
+    float sqrdMagX = sqrdMagnitude(p->x, p->size);
+    float sqrdMagY = sqrdMagnitude(p->y, p->size);
+    float magnitude = sqrt(sqrdMagX + sqrdMagY);
+    return magnitude;
+}
+
+void PredictCPU(Particles* const p, const Float2* const u, const Float2* const std, float dt) {
     //""" move according to control input u (heading change, velocity)
     //    with noise Q(std heading change, std velocity)`"""
     srand((unsigned int)time(NULL));   // Initialization, should only be called once.
@@ -111,31 +145,49 @@ void PredictCPU(Particles* p, const Float2* const u, const Float2* const std, fl
 //  for i, landmark in enumerate(landmarks) :
 //      distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
 //      weights *= scipy.stats.norm(distance, R).pdf(z[i])
-
+//
 //  weights += 1.e-300      # avoid round - off to zero
 //  weights /= sum(weights) # normalize
-void UpdateCPU(Particles* p, const float* const z, const float R, const Float2* const landmarks) {
+void UpdateCPU(Particles* const p, const float* const z, const float R, const Floats2* const landmarks) {
     int size = p->size;
 
     for (int i = 0; i < size; i++) {
-        float distance = norm;
-        float pdf;
-        
-        for (int j = 0; j < size; j++) {
-            p->weights[j] *= pdf;
+
+        Floats2 distance;
+        distance.x = (float*)malloc(size * sizeof(float));
+        memcpy(distance.x, p->x, size * sizeof(float));
+
+        distance.y = (float*)malloc(size * sizeof(float));
+        memcpy(distance.y, p->y, size * sizeof(float));
+
+        for (int i = 0; i < size; i++) {
+            distance.x[i] -= landmarks->x[i];
+            distance.y[i] -= landmarks->y[i];
         }
+
+        float* distanceMagnitude = (float*)calloc(size, sizeof(float));
+        for (int i = 0; i < size; i++) {
+            distanceMagnitude[i] = magnitude(distance.x[i], distance.y[i]);
+        }
+
+        float normPdf = normpdf(z[i], distanceMagnitude, R);
+
+        for (int j = 0; j < size; j++) {
+            p->weights[j] *= normPdf;
+        }
+
+        
     }
 
     float sum = 0.0f;
     for (int i = 0; i < size; i++) {
-        p->weights[i] *= FLT_EPSILON; // avoid round - off to zero
+        p->weights[i] += FLT_EPSILON; // avoid round - off to zero
         sum += p->weights[i];
     }
 
     for (int i = 0; i < size; i++) {
         p->weights[i] /= sum; // normalize
     }
-
 }
 
 /*
