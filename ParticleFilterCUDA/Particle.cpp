@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <math.h>
 
+#include "Float2.h"
+
 #define PI2 2.0f * 3.141592f
 
 float Lerp(float A, float B, float factor)

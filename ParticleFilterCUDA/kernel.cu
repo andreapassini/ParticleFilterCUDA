@@ -10,13 +10,14 @@
 #endif
 #include <device_functions.h>
 
-#include "common.h"
-#include "Particle.h"
-
 #include <stdio.h>
 #include <cmath>
 #include <string>
 #include <time.h>
+
+#include "common.h"
+#include "Particle.h"
+#include "Float2.h"
 
 #define PI 3.141592f
 #define PI2 2.0f * 3.141592f
@@ -101,14 +102,6 @@ float sqrdMagnitude(const float* const X, const int dim) {
         sqrdMag += X[i];
     }
     return sqrdMag;
-}
-
-static float magnitude(const float const x, const float const y) {
-    float mag = sqrt((x * x) + (y * y));
-}
-
-static float magnitude(const Float2& const vec2) {
-    return magnitude(vec2.x, vec2.y);
 }
 
 static float magnitudeXY(const Particles* const p) {
@@ -196,7 +189,7 @@ static void PredictCPU(Particles* const p, const Float2* const u, const Float2* 
 //
 //  weights += 1.e-300      # avoid round - off to zero
 //  weights /= sum(weights) # normalize
-static void UpdateCPU(Particles* const p, const float* const z, const float R, const Floats2* const landmarks) {
+static void UpdateCPU(Particles* const p, const float const * z, const float R, const Floats2 const * landmarks) {
     int size = p->size;
 
     for (int i = 0; i < size; i++) {
@@ -213,7 +206,7 @@ static void UpdateCPU(Particles* const p, const float* const z, const float R, c
         }
         float* distanceMagnitudes = (float*)calloc(size, sizeof(float));
         for (int j = 0; j < size; j++) {    // np.linalg.norm
-            distanceMagnitudes[j] = magnitude(distance.x[j], distance.y[j]);
+            distanceMagnitudes[j] = Magnitude(distance.x[j], distance.y[j]);
         }
 
         //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
@@ -225,10 +218,10 @@ static void UpdateCPU(Particles* const p, const float* const z, const float R, c
             p->weights[j] *= normPdfs[j];
         }
 
-        delete(distance.x);
-        delete(distance.y);
-        delete(distanceMagnitudes);
-        delete(normPdfs);
+        free(distance.x);
+        free(distance.y);
+        free(distanceMagnitudes);
+        free(normPdfs);
     }
 
     float sum = 0.0f;
@@ -258,22 +251,18 @@ static void EstimateCPU(const Particles* const p, Float2* const mean_out, Float2
     pos.y = (float*)malloc(p->size * sizeof(float));
     memcpy(pos.y, p->y, p->size * sizeof(float));
 
-    float* weights = (float*)malloc(p->size * sizeof(float));
-    memcpy(weights, p->weights, p->size * sizeof(float));
-
     // mean = np.average(pos, weights = weights, axis = 0)
-    (*mean_out) = WeightedAverage(&pos, weights, p->size);
+    (*mean_out) = WeightedAverage(&pos, p->weights, p->size);
     // var = np.average((pos - mean) **2, weights = weights, axis = 0)
     for (int i = 0; i < p->size; i++) {
         pos.x[i] = (pos.x[i] - mean_out->x) * (pos.x[i] - mean_out->x);
         pos.y[i] = (pos.y[i] - mean_out->y) * (pos.y[i] - mean_out->y);
     }
 
-    (*var_out) = WeightedAverage(&pos, weights, p->size);;
+    (*var_out) = WeightedAverage(&pos, p->weights, p->size);
 
-    delete(pos.x);
-    delete(pos.y);
-    delete(weights);
+    free(pos.x);
+    free(pos.y);
 }
 
 //def simple_resample(particles, weights) :
@@ -311,8 +300,8 @@ static void SimpleResample(Particles* const p) {
         p->weights[i] = equalWeight;
     }
 
-    delete(indexes);
-    delete(cumSum_arr);
+    free(indexes);
+    free(cumSum_arr);
 }
 
 // We don't resample at every epoch. 
@@ -321,7 +310,7 @@ static void SimpleResample(Particles* const p) {
 // which approximately measures the number of particles which meaningfully contribute to the probability distribution.
 //def neff(weights) :
 //    return 1. / np.sum(np.square(weights))
-static float neff(const float* const weights, const int dim) {
+static float Neff(const float* const weights, const int dim) {
     float res = 0.0f;
     float sum = FLT_EPSILON;
 
@@ -443,7 +432,7 @@ void particleFilterGPU(Particles* p) {
     cudaFree(d_out.weights);
 }
 
-void particleFilterCPU(Particles* const p) {
+void particleFilterCPU(Particles* const p, const int iterations, const float sensorStdError) {
     clock_t start, stop;
     double timer;
 
@@ -455,37 +444,91 @@ void particleFilterCPU(Particles* const p) {
 
     start = clock();
 
-    // Start of calculation
+    // Start
+
     Float2 u;
     Float2 std;
     float dt = 0.1f;
 
-    Floats2* landmarks;
+    Floats2 landmarks;
     int numberOfLandmarks = 4;
-    landmarks->x = (float*)malloc(numberOfLandmarks * sizeof(float));
-    landmarks->y = (float*)malloc(numberOfLandmarks * sizeof(float));
+    landmarks.x = (float*)malloc(numberOfLandmarks * sizeof(float));
+    landmarks.y = (float*)malloc(numberOfLandmarks * sizeof(float));
 
-    landmarks->x[0] = -1.0f;
-    landmarks->y[0] = 2.0f;
+    landmarks.x[0] = -1.0f;
+    landmarks.y[0] = 2.0f;
 
-    landmarks->x[1] = 5.0f;
-    landmarks->y[1] = 10.0f;
+    landmarks.x[1] = 5.0f;
+    landmarks.y[1] = 10.0f;
 
-    landmarks->x[2] = 12.0f;
-    landmarks->y[2] = 24.0f;
+    landmarks.x[2] = 12.0f;
+    landmarks.y[2] = 24.0f;
 
-    landmarks->x[3] = 18.0f;
-    landmarks->y[3] = 21.0f;
+    landmarks.x[3] = 18.0f;
+    landmarks.y[3] = 21.0f;
 
-    PredictCPU(p, &u, &std, dt);
+    Float2 robotPosition;
+    robotPosition.x = 0.0f;
+    robotPosition.y = 0.0f;
 
-    //UpdateCPU();
+    Float2* xs;
+    xs = (Float2*)malloc(iterations * sizeof(Float2));
 
-    // End of calculation
+    for (int i = 0; i < iterations; i++) {
+        // Diagonal movement
+        robotPosition.x += 1.0f;    
+        robotPosition.y += 1.0f;
+
+        srand((unsigned int)time(NULL));   // Initialization, should only be called once.
+        float r = 0.0f;
+        float* zs = (float*)malloc(numberOfLandmarks * sizeof(float));
+        for (int j = 0; j < 0; j++) {
+            Float2 landmark;
+            landmark.x = landmarks.x[j];
+            landmark.y = landmarks.y[j];
+            Float2 distanceRobotLandmark = Minus(&landmark, &robotPosition);
+            float magnitudeDistance = Magnitude(distanceRobotLandmark);
+            r = ((float)rand() / (float)(RAND_MAX));      // rand Returns a pseudo-random integer between 0 and RAND_MAX.
+            zs[j] = magnitudeDistance + (r * sensorStdError);
+        }
+        
+        PredictCPU(p, &u, &std, dt);
+
+        UpdateCPU(p, zs, sensorStdError, &landmarks);
+
+        //# resample if too few effective particles
+        //    if neff(weights) < N / 2:
+        //indexes = systematic_resample(weights)
+        //    resample_from_index(particles, weights, indexes)
+        //    assert np.allclose(weights, 1 / N)
+        //mu, var = estimate(particles, weights)
+        //xs.append(mu)
+
+        float neff = Neff(p->weights, p->size);
+        if (neff < p->size / 2.0f) {
+            // resample
+            SimpleResample(p);
+        }
+
+        Float2 var;
+        Float2 mean;
+
+        EstimateCPU(p, &mean, &var);
+
+        xs[i] = mean;
+
+        free(zs);
+    }
+
+    // End
 
     stop = clock();
     timer = ((double)(stop - start)) / (double)CLOCKS_PER_SEC;
-    printf("\n\n Total execution time: %9.4f sec", timer);
+    printf("\n\n Total execution time: %9.4f sec \n\n", timer);
+
+    free(landmarks.x);
+    free(landmarks.y);
+    free(xs);
 }
 
 void euclideanNorm(Particles* p, float2* norm, float2* landmark) {
@@ -581,7 +624,7 @@ int main()
 
     //particleFilterGPU(&p);
 
-    particleFilterCPU(&p);
+    particleFilterCPU(&p, 18, 0.1f);
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.
