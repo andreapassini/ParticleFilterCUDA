@@ -25,7 +25,7 @@
 #define IDX(i,j,n) (i*n+j)
 #define ABS(x,y) (x-y>=0?x-y:y-x)
 
-#define DIM 100
+#define DIM 10'000
 
 #define BLOCKSIZE 1024  // block dim 1D
 #define NUMBLOCKS 1024  // grid dim 1D 
