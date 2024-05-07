@@ -86,7 +86,7 @@ __global__ void Predict(Particles* D_in, Particles* C_out, curandState* states, 
 }
 
 //  def normpdf(x, mu=0, sigma=1):
-float normpdf(const float x, const float mu = 0.0f, const float sigma = 1.0f) {
+static float normpdf(const float x, const float mu = 0.0f, const float sigma = 1.0f) {
     //  u = float((x - mu) / abs(sigma))
     //  y = exp(-u * u / 2) / (sqrt(2 * pi) * abs(sigma))
     //  return y
@@ -103,22 +103,22 @@ float sqrdMagnitude(const float* const X, const int dim) {
     return sqrdMag;
 }
 
-float magnitude(const float const x, const float const y) {
+static float magnitude(const float const x, const float const y) {
     float mag = sqrt((x * x) + (y * y));
 }
 
-float magnitude(const Float2& const vec2) {
+static float magnitude(const Float2& const vec2) {
     return magnitude(vec2.x, vec2.y);
 }
 
-float magnitudeXY(const Particles* const p) {
+static float magnitudeXY(const Particles* const p) {
     float sqrdMagX = sqrdMagnitude(p->x, p->size);
     float sqrdMagY = sqrdMagnitude(p->y, p->size);
     float magnitude = sqrt(sqrdMagX + sqrdMagY);
     return magnitude;
 }
 
-Float2 WeightedAverage(const Floats2* const pos, const float* const weights, const int dim) {
+static Float2 WeightedAverage(const Floats2* const pos, const float* const weights, const int dim) {
     Float2 avg;
     avg.x = 0.0f;
     avg.y = 0.0f;
@@ -141,7 +141,33 @@ Float2 WeightedAverage(const Floats2* const pos, const float* const weights, con
     return avg;
 }
 
-void PredictCPU(Particles* const p, const Float2* const u, const Float2* const std, float dt) {
+static float* CumSum(const float* const arr_in, const int dim) {
+    float* cumSumArr = (float*)malloc(dim * sizeof(float));
+
+    for (int i = 0; i < dim; i++) {
+        cumSumArr[i] = arr_in[i];
+        for (int j = 0; j < i; j++) {
+            cumSumArr[i] += arr_in[j];
+        }
+    }
+
+    return cumSumArr;
+}
+
+// find the index, in the sorted array (ascending order), to insert the element preserving the order
+static int SearchSorted(const float* const sortedArry, const float element, const int dim) {
+    int index = dim;
+
+    for (int i = 0; i < dim - 1; i++) {
+        if (element <= sortedArry[i] && element > sortedArry[i + 1]) {
+            index = i;
+        }
+    }
+
+    return index;
+}
+
+static void PredictCPU(Particles* const p, const Float2* const u, const Float2* const std, const float dt) {
     //""" move according to control input u (heading change, velocity)
     //    with noise Q(std heading change, std velocity)`"""
     srand((unsigned int)time(NULL));   // Initialization, should only be called once.
@@ -163,7 +189,6 @@ void PredictCPU(Particles* const p, const Float2* const u, const Float2* const s
     }
 }
 
-
 //def update(particles, weights, z, R, landmarks) :
 //  for i, landmark in enumerate(landmarks) :
 //      distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
@@ -171,7 +196,7 @@ void PredictCPU(Particles* const p, const Float2* const u, const Float2* const s
 //
 //  weights += 1.e-300      # avoid round - off to zero
 //  weights /= sum(weights) # normalize
-void UpdateCPU(Particles* const p, const float* const z, const float R, const Floats2* const landmarks) {
+static void UpdateCPU(Particles* const p, const float* const z, const float R, const Floats2* const landmarks) {
     int size = p->size;
 
     for (int i = 0; i < size; i++) {
@@ -225,7 +250,7 @@ void UpdateCPU(Particles* const p, const float* const z, const float R, const Fl
 //    var = np.average((pos - mean) * *2, weights = weights, axis = 0)
 //    return mean, var
 // returns mean and variance of the weighted particles
-void EstimateCPU(const Particles* const p, Float2* const mean_out, Float2* const var_out) {
+static void EstimateCPU(const Particles* const p, Float2* const mean_out, Float2* const var_out) {
 
     Floats2 pos;
     pos.x = (float*)malloc(p->size * sizeof(float));
@@ -250,6 +275,65 @@ void EstimateCPU(const Particles* const p, Float2* const mean_out, Float2* const
     delete(pos.y);
     delete(weights);
 }
+
+//def simple_resample(particles, weights) :
+//    N = len(particles)
+//    cumulative_sum = np.cumsum(weights)
+//    cumulative_sum[-1] = 1. # avoid round - off error
+//    indexes = np.searchsorted(cumulative_sum, random(N))  // Return random floats in the half-open interval [0.0, 1.0).
+//
+//    # resample according to indexes
+//    particles[:] = particles[indexes]
+//    weights.fill(1.0 / N)
+static void SimpleResample(Particles* const p) {
+    int dim = p->size;
+
+    //    cumulative_sum = np.cumsum(weights)
+    float* cumSum_arr = CumSum(p->weights, dim);
+
+    // indexes = np.searchsorted(cumulative_sum, random(N))  // Return random floats in the half-open interval [0.0, 1.0).
+    int* indexes = (int*)malloc(dim * sizeof(int));
+    srand((unsigned int)time(NULL));   // Initialization, should only be called once.
+    float r = 0.0f;
+    for (int i = 0; i < dim; i++) {
+        r = ((float)rand() / (float)(RAND_MAX));      // rand Returns a pseudo-random integer between 0 and RAND_MAX.
+        indexes[i] = SearchSorted(cumSum_arr, r, dim);
+    }
+
+    //  # resample according to indexes
+    //  particles[:] = particles[indexes]
+    //  weights.fill(1.0 / N)
+    float equalWeight = 1.0f / dim;
+    for (int i = 0; i < dim; i++) {
+        p->x[i] = p->x[indexes[i]];
+        p->y[i] = p->y[indexes[i]];
+        p->heading[i] = p->heading[indexes[i]];
+        p->weights[i] = equalWeight;
+    }
+
+    delete(indexes);
+    delete(cumSum_arr);
+}
+
+// We don't resample at every epoch. 
+// For example, if you received no new measurements you have not received any information from which the resample can benefit. 
+// We can determine when to resample by using something called the *effective N*, 
+// which approximately measures the number of particles which meaningfully contribute to the probability distribution.
+//def neff(weights) :
+//    return 1. / np.sum(np.square(weights))
+static float neff(const float* const weights, const int dim) {
+    float res = 0.0f;
+    float sum = FLT_EPSILON;
+
+    for (int i = 0; i < dim; i++) {
+        float squaredWeight = weights[i] * weights[i];
+        sum += squaredWeight;
+    }
+
+    res = 1.0f / sum;
+    return res;
+}
+
 
 /*
  *  Device function: block parallel reduction based on warp unrolling
@@ -359,7 +443,7 @@ void particleFilterGPU(Particles* p) {
     cudaFree(d_out.weights);
 }
 
-void particleFilterCPU(Particles* p) {
+void particleFilterCPU(Particles* const p) {
     clock_t start, stop;
     double timer;
 
@@ -375,6 +459,23 @@ void particleFilterCPU(Particles* p) {
     Float2 u;
     Float2 std;
     float dt = 0.1f;
+
+    Floats2* landmarks;
+    int numberOfLandmarks = 4;
+    landmarks->x = (float*)malloc(numberOfLandmarks * sizeof(float));
+    landmarks->y = (float*)malloc(numberOfLandmarks * sizeof(float));
+
+    landmarks->x[0] = -1.0f;
+    landmarks->y[0] = 2.0f;
+
+    landmarks->x[1] = 5.0f;
+    landmarks->y[1] = 10.0f;
+
+    landmarks->x[2] = 12.0f;
+    landmarks->y[2] = 24.0f;
+
+    landmarks->x[3] = 18.0f;
+    landmarks->y[3] = 21.0f;
 
     PredictCPU(p, &u, &std, dt);
 
