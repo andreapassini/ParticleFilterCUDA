@@ -326,7 +326,7 @@ static float Neff(const float* const weights, const int dim) {
 /*
  *  Block by block parallel implementation without divergence (interleaved schema)
  */
-__global__ void blockParReduce2(int* in, int* out, ulong n) {
+__global__ void SumParReduce(int* in, int* out, ulong n) {
 
     uint tid = threadIdx.x;
     ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
