@@ -40,10 +40,68 @@
 #define MinHeading 0.0f
 #define MaxHeading 3.0f
 
-__global__ void addKernel(int *c, const int *a, const int *b)
+__global__ void addKernel(int* c, const int* a, const int* b)
 {
     int i = threadIdx.x;
     c[i] = a[i] + b[i];
+}
+
+/*
+ *  Block by block parallel implementation without divergence (interleaved schema)
+ */
+__global__ void SumParReduce(int* in, int* out, ulong n) {
+
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // boundary check
+    if (idx >= n)
+        return;
+
+    // convert global data pointer to the local pointer of this block
+    int* thisBlock = in + blockIdx.x * blockDim.x;
+
+    // in-place reduction in global memory
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride)
+            thisBlock[tid] += thisBlock[tid + stride];
+
+        // synchronize within threadblock
+        __syncthreads();
+    }
+
+    // write result for this block to global mem
+    if (tid == 0)
+        out[blockIdx.x] = thisBlock[0];
+}
+
+/*
+ *  Block by block parallel implementation without divergence (interleaved schema)
+ */
+__global__ void SumSquaredParReduce(float* in, float* out, const ulong n) {
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // boundary check
+    if (idx >= n)
+        return;
+
+    // convert global data pointer to the local pointer of this block
+    float* thisBlock = in + blockIdx.x * blockDim.x;
+
+    // in-place reduction in global memory
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride)
+            thisBlock[tid] += (thisBlock[tid + stride] * thisBlock[tid + stride]);
+
+        // synchronize within threadblock
+        __syncthreads();
+    }
+
+    // write result for this block to global mem
+    if (tid == 0)
+        out[blockIdx.x] = thisBlock[0];
+
 }
 
 __global__ void GenerateParticles(Particles* D_in, Particles* C_out, curandState* states, float2 x_range, float2 y_range, float2 heading_range) {
@@ -63,7 +121,7 @@ __global__ void GenerateParticles(Particles* D_in, Particles* C_out, curandState
 //# def predict(particles, u, std, dt=1.):
 //# """ move according to control input u (heading change, velocity)
 //# with noise Q (std heading change, std velocity)`"""
-__global__ void Predict(Particles* D_in, Particles* C_out, curandState* states, float* u, float* std, float dt) {
+__global__ void PredictGPUKernel(Particles* D_in, Particles* C_out, curandState* states, float* u, float* std, float dt) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     dt = 1.0f;
 
@@ -73,7 +131,7 @@ __global__ void Predict(Particles* D_in, Particles* C_out, curandState* states, 
     float heading = D_in->heading[tid];
     heading += u[0] + (curand_normal(&states[tid]) * std[1]);
     heading = std::fmod(heading, 2 * PI);
-        
+
     //# move in the (noisy) commanded direction
     float dist = (u[1] * dt) + (curand_uniform(&states[tid]) * std[1]);
     float pos_x = D_in->x[tid];
@@ -84,6 +142,47 @@ __global__ void Predict(Particles* D_in, Particles* C_out, curandState* states, 
     C_out->x[tid] = pos_x;
     C_out->y[tid] = pos_y;
     C_out->heading[tid] = heading;
+}
+
+static float SumArrayGPU(const float* const arrIn, const int dim) {
+    float sum = 0.0f;
+
+    int blockSize = 1024;            // block dim 1D
+    //int numBlock = 1024 * 1024;      // grid dim 1D
+    int numBlock = (dim / blockSize);
+    if (dim % blockSize != 0) {
+        numBlock += 1;
+    }
+
+    long blocksBytes = numBlock * sizeof(float);
+    long arrayBytes = dim * sizeof(float);
+
+    float* arrOut, * d_arrIn, * d_arrOut;
+    CHECK(cudaMalloc((void**)&d_arrIn, arrayBytes));
+    CHECK(cudaMemcpy(d_arrIn, arrIn, arrayBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_arrOut, blocksBytes));
+    CHECK(cudaMemset((void*)d_arrOut, 0, blocksBytes));
+    arrOut = (float*)malloc(blocksBytes * sizeof(float));
+
+    SumParReduce << <numBlock, blockSize >> > (d_arrIn, d_arrOut, dim);
+    CHECK(cudaDeviceSynchronize());
+    CHECK(cudaGetLastError());
+
+    // memcopy D2H
+    CHECK(cudaMemcpy(arrOut, d_arrOut, blocksBytes, cudaMemcpyDeviceToHost));
+
+    // check result
+    for (uint i = 0; i < numBlock; i++) {
+        sum += arrOut[i];
+    }
+
+    cudaFree(d_arrOut);
+    cudaFree(d_arrIn);
+    free(arrOut);
+
+    CHECK(cudaDeviceReset());
+
+    return sum;
 }
 
 //  def normpdf(x, mu=0, sigma=1):
@@ -99,7 +198,7 @@ static float normpdf(const float x, const float mu = 0.0f, const float sigma = 1
 float sqrdMagnitude(const float* const X, const int dim) {
     float sqrdMag = FLT_EPSILON;
     for (int i = 0; i < dim; i++) {
-        sqrdMag += X[i];
+        sqrdMag += X[i] * X[i];
     }
     return sqrdMag;
 }
@@ -138,10 +237,19 @@ static float* CumSum(const float* const arr_in, const int dim) {
     float* cumSumArr = (float*)malloc(dim * sizeof(float));
 
     for (int i = 0; i < dim; i++) {
-        cumSumArr[i] = arr_in[i];
-        for (int j = 0; j < i; j++) {
+        for (int j = 0; j <= i; j++) {
             cumSumArr[i] += arr_in[j];
         }
+    }
+
+    return cumSumArr;
+}
+
+static float* CumSumGPU(const float* const arr_in, const int dim) {
+    float* cumSumArr = (float*)malloc(dim * sizeof(float));
+
+    for (int i = 0; i < dim; i++) {
+        cumSumArr[i] = SumArrayGPU(arr_in, i + 1);  // + 1 for the size of the subArr
     }
 
     return cumSumArr;
@@ -170,6 +278,28 @@ static void PredictCPU(Particles* const p, const Float2* const u, const Float2* 
 
         // update heading
         p->heading[i] += u->x + (r * std->x);
+        p->heading[i] = fmodf(p->heading[i], PI2);
+
+        float dist = (u->y * dt) + (r * std->y);
+
+        // move in the(noisy) commanded direction
+        p->x[i] += cos(p->heading[i]) * dist;
+        p->y[i] += sin(p->heading[i]) * dist;
+
+        //PrintParticle(p, i);
+    }
+}
+
+static void PredictGPU(Particles* const p, const Float2* const u, const Float2* const std, const float dt) {
+    //""" move according to control input u (heading change, velocity)
+    //    with noise Q(std heading change, std velocity)`"""
+    srand((unsigned int)time(NULL));   // Initialization, should only be called once.
+
+    for (int i = 0; i < p->size; i++) {
+        float r = ((float)rand() / (float)(RAND_MAX));      // rand Returns a pseudo-random integer between 0 and RAND_MAX.
+
+        // update heading
+        p->heading[i] += u->x + (r * std->x);
         p->heading[i] = fmodf(p->heading[i], 2.0f * PI);
 
         float dist = (u->y * dt) + (r * std->y);
@@ -189,7 +319,7 @@ static void PredictCPU(Particles* const p, const Float2* const u, const Float2* 
 //
 //  weights += 1.e-300      # avoid round - off to zero
 //  weights /= sum(weights) # normalize
-static void UpdateCPU(Particles* const p, const float const * z, const float R, const Floats2 const * landmarks) {
+static void UpdateCPU(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks) {
     int size = p->size;
 
     for (int i = 0; i < size; i++) {
@@ -200,6 +330,54 @@ static void UpdateCPU(Particles* const p, const float const * z, const float R, 
         memcpy(distance.x, p->x, size * sizeof(float));
         distance.y = (float*)malloc(size * sizeof(float));
         memcpy(distance.y, p->y, size * sizeof(float));
+
+        for (int j = 0; j < size; j++) {    // particles[:, 0 : 2] - landmark
+            distance.x[j] -= landmarks->x[i];
+            distance.y[j] -= landmarks->y[i];
+        }
+        float* distanceMagnitudes = (float*)calloc(size, sizeof(float));
+        for (int j = 0; j < size; j++) {    // np.linalg.norm
+            distanceMagnitudes[j] = Magnitude(distance.x[j], distance.y[j]);
+        }
+
+        //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
+        float* normPdfs = (float*)malloc(size * sizeof(float));
+        for (int j = 0; j < size; j++) { // scipy.stats.norm(distance, R).pdf(z[i])
+            normPdfs[j] *= normpdf(z[i], distanceMagnitudes[j], R);;
+        }
+        for (int j = 0; j < size; j++) { // weights *=  // element wise multiplication
+            p->weights[j] *= normPdfs[j];
+        }
+
+        free(distance.x);
+        free(distance.y);
+        free(distanceMagnitudes);
+        free(normPdfs);
+    }
+
+    float sum = 0.0f;
+    for (int i = 0; i < size; i++) {
+        p->weights[i] += FLT_EPSILON; // avoid round - off to zero
+        sum += p->weights[i];
+    }
+
+    for (int i = 0; i < size; i++) {
+        p->weights[i] /= sum; // normalize
+    }
+}
+
+static void UpdateGPU(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks) {
+    int size = p->size;
+
+    for (int i = 0; i < size; i++) {
+
+        //  distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
+        Floats2 distance;
+        distance.x = (float*)malloc(size * sizeof(float));
+        memcpy(distance.x, p->x, size * sizeof(float));
+        distance.y = (float*)malloc(size * sizeof(float));
+        memcpy(distance.y, p->y, size * sizeof(float));
+
         for (int j = 0; j < size; j++) {    // particles[:, 0 : 2] - landmark
             distance.x[j] -= landmarks->x[i];
             distance.y[j] -= landmarks->y[i];
@@ -323,33 +501,48 @@ static float Neff(const float* const weights, const int dim) {
     return res;
 }
 
-/*
- *  Block by block parallel implementation without divergence (interleaved schema)
- */
-__global__ void SumParReduce(int* in, int* out, ulong n) {
+static float NeffGPU(const float* const weightsIn, const int dim) {
+    float res = 0.0f;
+    float sum = FLT_EPSILON;
 
-    uint tid = threadIdx.x;
-    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-    // boundary check
-    if (idx >= n)
-        return;
-
-    // convert global data pointer to the local pointer of this block
-    int* thisBlock = in + blockIdx.x * blockDim.x;
-
-    // in-place reduction in global memory
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (tid < stride)
-            thisBlock[tid] += thisBlock[tid + stride];
-
-        // synchronize within threadblock
-        __syncthreads();
+    int blockSize = 1024;            // block dim 1D
+    //int numBlock = 1024 * 1024;      // grid dim 1D
+    int numBlock = (dim / blockSize);
+    if (dim % blockSize != 0) {
+        numBlock += 1;
     }
 
-    // write result for this block to global mem
-    if (tid == 0)
-        out[blockIdx.x] = thisBlock[0];
+    long blocksBytes = numBlock * sizeof(float);
+    long arrayBytes = dim * sizeof(float);
+
+    float* weightsOut, * d_weightsIn, * d_weightsOut;
+    CHECK(cudaMalloc((void**)&d_weightsIn, arrayBytes));
+    CHECK(cudaMemcpy(d_weightsIn, weightsIn, arrayBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_weightsOut, blocksBytes));
+    CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
+    weightsOut = (float*)malloc(blocksBytes * sizeof(float));
+
+    SumSquaredParReduce << <numBlock, blockSize >> > (d_weightsIn, d_weightsOut, dim);
+    CHECK(cudaDeviceSynchronize());
+    CHECK(cudaGetLastError());
+
+    // memcopy D2H
+    CHECK(cudaMemcpy(weightsOut, d_weightsOut, blocksBytes, cudaMemcpyDeviceToHost));
+
+    // check result
+    for (uint i = 0; i < numBlock; i++) {
+        sum += weightsOut[i];
+    }
+
+    res = 1.0f / sum;
+
+    cudaFree(d_weightsOut);
+    cudaFree(d_weightsIn);
+    free(weightsOut);
+
+    CHECK(cudaDeviceReset());
+
+    return res;
 }
 
 /*
@@ -418,7 +611,7 @@ __global__ void Update(float2 norm, Particles* particles, Particles* C_out, floa
     // boundary check
     if (tid >= DIM)
         return;
-    
+
     //  distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
     //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
 
@@ -504,7 +697,7 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
 
     for (int i = 0; i < iterations; i++) {
         // Diagonal movement
-        robotPosition.x += 1.0f;    
+        robotPosition.x += 1.0f;
         robotPosition.y += 1.0f;
 
         srand((unsigned int)time(NULL));   // Initialization, should only be called once.
@@ -519,7 +712,7 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
             r = ((float)rand() / (float)(RAND_MAX));      // rand Returns a pseudo-random integer between 0 and RAND_MAX.
             zs[j] = magnitudeDistance + (r * sensorStdError);
         }
-        
+
         PredictCPU(p, &u, &std, dt);
 
         UpdateCPU(p, zs, sensorStdError, &landmarks);
@@ -589,12 +782,12 @@ void euclideanNorm(Particles* p, float2* norm, float2* landmark) {
 
     Create_Particles(&p_norm, DIM);
 
-    Norm_BlockUnroll8<<<NUMBLOCKS / 8, BLOCKSIZE>>>(d_p.x, d_out.x, -landmark->x, N);  // ERRROR at <<< can be simply ignored
-    Norm_BlockUnroll8<<<NUMBLOCKS / 8, BLOCKSIZE>>>(d_p.y, d_out.y, -landmark->y, N);
+    Norm_BlockUnroll8 << <NUMBLOCKS / 8, BLOCKSIZE >> > (d_p.x, d_out.x, -landmark->x, N);  // ERRROR at <<< can be simply ignored
+    Norm_BlockUnroll8 << <NUMBLOCKS / 8, BLOCKSIZE >> > (d_p.y, d_out.y, -landmark->y, N);
 
     CHECK(cudaDeviceSynchronize());
     CHECK(cudaGetLastError());
-    
+
     CHECK(cudaMemcpy(p_norm.x, d_out.x, DIM * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK(cudaMemcpy(p_norm.y, d_out.y, DIM * sizeof(float), cudaMemcpyDeviceToHost));
 
@@ -618,20 +811,6 @@ void euclideanNorm(Particles* p, float2* norm, float2* landmark) {
     free(p_norm.weights);
 }
 
-void updateStep() {
-
-    //for i, landmark in enumerate(landmarks) :
-    //    distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
-    //    weights *= scipy.stats.norm(distance, R).pdf(z[i])
-    
-    // Euclidean norm => Kernel
-    // For => Kernel for Update
-
-
-    //weights += 1.e-300      # avoid round - off to zero
-    //weights /= sum(weights) # normalize
-}
-
 int main()
 {
     Float2 xRange;
@@ -650,7 +829,7 @@ int main()
 
     CreateAndRandomInitialize_Particles(&p, DIM, &xRange, &yRange, &headingRange);
 
-    particleFilterGPU(&p);
+    //particleFilterGPU(&p);
 
     particleFilterCPU(&p, 18, 0.1f);
 
