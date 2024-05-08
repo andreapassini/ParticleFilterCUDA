@@ -323,6 +323,34 @@ static float Neff(const float* const weights, const int dim) {
     return res;
 }
 
+/*
+ *  Block by block parallel implementation without divergence (interleaved schema)
+ */
+__global__ void blockParReduce2(int* in, int* out, ulong n) {
+
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // boundary check
+    if (idx >= n)
+        return;
+
+    // convert global data pointer to the local pointer of this block
+    int* thisBlock = in + blockIdx.x * blockDim.x;
+
+    // in-place reduction in global memory
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride)
+            thisBlock[tid] += thisBlock[tid + stride];
+
+        // synchronize within threadblock
+        __syncthreads();
+    }
+
+    // write result for this block to global mem
+    if (tid == 0)
+        out[blockIdx.x] = thisBlock[0];
+}
 
 /*
  *  Device function: block parallel reduction based on warp unrolling
@@ -622,7 +650,7 @@ int main()
 
     CreateAndRandomInitialize_Particles(&p, DIM, &xRange, &yRange, &headingRange);
 
-    //particleFilterGPU(&p);
+    particleFilterGPU(&p);
 
     particleFilterCPU(&p, 18, 0.1f);
 
