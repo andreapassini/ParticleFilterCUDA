@@ -319,11 +319,10 @@ static void PredictGPU(Particles* const p, const Float2* const u, const Float2* 
 //
 //  weights += 1.e-300      # avoid round - off to zero
 //  weights /= sum(weights) # normalize
-static void UpdateCPU(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks) {
+static void UpdateCPU(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks, const int numberOfLandmarks) {
     int size = p->size;
 
-    for (int i = 0; i < size; i++) {
-
+    for (int i = 0; i < numberOfLandmarks; i++) {
         //  distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
         Floats2 distance;
         distance.x = (float*)malloc(size * sizeof(float));
@@ -703,7 +702,7 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
         srand((unsigned int)time(NULL));   // Initialization, should only be called once.
         float r = 0.0f;
         float* zs = (float*)malloc(numberOfLandmarks * sizeof(float));
-        for (int j = 0; j < 0; j++) {
+        for (int j = 0; j < numberOfLandmarks; j++) {
             Float2 landmark;
             landmark.x = landmarks.x[j];
             landmark.y = landmarks.y[j];
@@ -715,7 +714,7 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
 
         PredictCPU(p, &u, &std, dt);
 
-        UpdateCPU(p, zs, sensorStdError, &landmarks);
+        UpdateCPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
 
         //# resample if too few effective particles
         //    if neff(weights) < N / 2:
