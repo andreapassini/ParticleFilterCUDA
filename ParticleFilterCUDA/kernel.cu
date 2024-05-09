@@ -49,7 +49,7 @@ __global__ void addKernel(int* c, const int* a, const int* b)
 /*
  *  Block by block parallel implementation without divergence (interleaved schema)
  */
-__global__ void SumParReduce(int* in, int* out, ulong n) {
+__global__ void SumParReduce(float* in, float* out, ulong n) {
 
     uint tid = threadIdx.x;
     ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -59,7 +59,7 @@ __global__ void SumParReduce(int* in, int* out, ulong n) {
         return;
 
     // convert global data pointer to the local pointer of this block
-    int* thisBlock = in + blockIdx.x * blockDim.x;
+    float* thisBlock = in + blockIdx.x * blockDim.x;
 
     // in-place reduction in global memory
     for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
@@ -190,6 +190,12 @@ static float normpdf(const float x, const float mu = 0.0f, const float sigma = 1
     //  u = float((x - mu) / abs(sigma))
     //  y = exp(-u * u / 2) / (sqrt(2 * pi) * abs(sigma))
     //  return y
+    float u = (x - mu) / abs(sigma);
+    float y = exp(-u * u / 2) / (sqrt(PI2) * abs(sigma));
+    return y;
+}
+
+__device__ float normpdfGPU(const float x, const float mu = 0.0f, const float sigma = 1.0f) {
     float u = (x - mu) / abs(sigma);
     float y = exp(-u * u / 2) / (sqrt(PI2) * abs(sigma));
     return y;
@@ -342,7 +348,7 @@ static void UpdateCPU(Particles* const p, const float const* z, const float R, c
         //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
         float* normPdfs = (float*)malloc(size * sizeof(float));
         for (int j = 0; j < size; j++) { // scipy.stats.norm(distance, R).pdf(z[i])
-            normPdfs[j] *= normpdf(z[i], distanceMagnitudes[j], R);;
+            normPdfs[j] = normpdf(z[i], distanceMagnitudes[j], R);;
         }
         for (int j = 0; j < size; j++) { // weights *=  // element wise multiplication
             p->weights[j] *= normPdfs[j];
@@ -365,17 +371,51 @@ static void UpdateCPU(Particles* const p, const float const* z, const float R, c
     }
 }
 
-static void UpdateGPU(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks) {
+__global__ void UpdateGPUKernel(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks, const int numberOfLandmarks) {
+
+
+
+}
+
+static void UpdateGPU(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks, const int numberOfLandmarks) {
     int size = p->size;
 
-    for (int i = 0; i < size; i++) {
+    ulong particlesBytes = p->size * sizeof(float);
 
+    float* d_landmarkX, * d_landmarkY;
+    CHECK(cudaMalloc((void**)&d_landmarkX, particlesBytes));
+    CHECK(cudaMemcpy(d_landmarkX, landmarks->x, particlesBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_landmarkY, particlesBytes));
+    CHECK(cudaMemcpy(d_landmarkY, landmarks->y, particlesBytes, cudaMemcpyHostToDevice));
+
+    float* d_distanceX, * d_distanceY;
+    CHECK(cudaMalloc((void**)&d_distanceX, particlesBytes));
+    CHECK(cudaMemcpy(d_distanceX, p->x, particlesBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_distanceY, particlesBytes));
+    CHECK(cudaMemcpy(d_distanceY, p->y, particlesBytes, cudaMemcpyHostToDevice));
+
+    float* d_distanceXOut, * d_distanceYOut;
+    CHECK(cudaMalloc((void**)&d_distanceXOut, particlesBytes));
+    CHECK(cudaMemset((void*)d_distanceXOut, 0.0f, particlesBytes));
+    CHECK(cudaMalloc((void**)&d_distanceYOut, particlesBytes));
+    CHECK(cudaMemset((void*)d_distanceYOut, 0.0f, particlesBytes));
+
+    float* d_normPdfs;
+    CHECK(cudaMalloc((void**)&d_normPdfs, particlesBytes));
+    CHECK(cudaMemset((void*)d_normPdfs, 0.0f, particlesBytes));
+
+    for (int i = 0; i < numberOfLandmarks; i++) {
         //  distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
         Floats2 distance;
         distance.x = (float*)malloc(size * sizeof(float));
         memcpy(distance.x, p->x, size * sizeof(float));
         distance.y = (float*)malloc(size * sizeof(float));
         memcpy(distance.y, p->y, size * sizeof(float));
+
+        float* weightsOut, * d_weightsIn, * d_weightsOut;
+
+        ulong particlesBytes = p->size * sizeof(Particles);
+        Particles* d_pIn;
 
         for (int j = 0; j < size; j++) {    // particles[:, 0 : 2] - landmark
             distance.x[j] -= landmarks->x[i];
@@ -389,7 +429,7 @@ static void UpdateGPU(Particles* const p, const float const* z, const float R, c
         //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
         float* normPdfs = (float*)malloc(size * sizeof(float));
         for (int j = 0; j < size; j++) { // scipy.stats.norm(distance, R).pdf(z[i])
-            normPdfs[j] *= normpdf(z[i], distanceMagnitudes[j], R);;
+            normPdfs[j] = normpdf(z[i], distanceMagnitudes[j], R);;
         }
         for (int j = 0; j < size; j++) { // weights *=  // element wise multiplication
             p->weights[j] *= normPdfs[j];
@@ -410,6 +450,11 @@ static void UpdateGPU(Particles* const p, const float const* z, const float R, c
     for (int i = 0; i < size; i++) {
         p->weights[i] /= sum; // normalize
     }
+
+    cudaFree(d_landmarkX);
+    cudaFree(d_landmarkY);
+
+    CHECK(cudaDeviceReset());
 }
 
 //def estimate(particles, weights) :
@@ -569,7 +614,7 @@ __device__ void blockWarpUnroll(float* thisBlock, int blockDim, uint tid) {
     }
 }
 
-__global__ void Norm_BlockUnroll8(float* in, float* out, float add, ulong n) {
+__global__ void Norm_BlockUnroll8(float* in, float* out, const float add, const ulong n) {
     uint tid = threadIdx.x;
     ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -617,7 +662,7 @@ __global__ void Update(float2 norm, Particles* particles, Particles* C_out, floa
 }
 
 
-void particleFilterGPU(Particles* p) {
+void particleFilterGPU(Particles* const p, const int iterations, const float sensorStdError) {
 
     Particles d_p;
 
