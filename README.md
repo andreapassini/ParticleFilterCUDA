@@ -1,5 +1,7 @@
 # Particle Filter
 
+
+
 ## Motivation
 
 We have moving objects that we want to track, like fighter jets, missiles or a car, the problem will have these characteristics:
@@ -337,3 +339,51 @@ static void SimpleResample(Particles* const p) {
     free(cumSum_arr);
 }
 ```
+
+We don't resample at every epoch. For example, if you received no new measurements you have not received any information from which the resample can benefit. We can determine when to resample by using something called the *effective N*, which approximately measures the number of particles which meaningfully contribute to the probability distribution. The equation for this is
+
+$$\hat{N}_\text{eff} = \frac{1}{\sum w^2}$$
+
+If $\hat{N}_\text{eff}$ falls below some threshold it is time to resample. A useful starting point is $N/2$, but this varies by problem. It is also possible for $\hat{N}_\text{eff} = N$, which means the particle set has collapsed to one point (each has equal weight). It may not be theoretically pure, but if that happens I create a new distribution of particles in the hopes of generating particles with more diversity. If this happens to you often, you may need to increase the number of particles, or otherwise adjust your filter. We will talk more of this later.
+
+### Python implementation
+
+```python
+def neff(weights):
+    return 1. / np.sum(np.square(weights))
+```
+
+### C/C++ implementation
+
+```c++
+static float Neff(const float* const weights, const int dim) {
+    float res = 0.0f;
+    float sum = FLT_EPSILON;
+
+    for (int i = 0; i < dim; i++) {
+        float squaredWeight = weights[i] * weights[i];
+        sum += squaredWeight;
+    }
+
+    res = 1.0f / sum;
+    return res;
+}
+```
+
+
+# GPU Implementation
+
+## Data Structure
+
+## Particle Generation
+
+## Predict Step
+
+## Update Step
+
+## Estimate Step
+
+## Resampling Step
+
+# Comparison
+
