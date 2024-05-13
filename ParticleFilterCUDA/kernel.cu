@@ -25,7 +25,7 @@
 #define IDX(i,j,n) (i*n+j)
 #define ABS(x,y) (x-y>=0?x-y:y-x)
 
-#define DIM 10'000
+#define DIM 1'000'000
 
 #define BLOCKSIZE 1024  // block dim 1D
 #define NUMBLOCKS 1024  // grid dim 1D 
@@ -101,47 +101,50 @@ __global__ void SumSquaredParReduce(float* in, float* out, const ulong n) {
     // write result for this block to global mem
     if (tid == 0)
         out[blockIdx.x] = thisBlock[0];
-
 }
 
 __global__ void GenerateParticles(Particles* D_in, Particles* C_out, curandState* states, float2 x_range, float2 y_range, float2 heading_range) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    curand_init(tid, 0, 0, &states[tid]);
-    float pos_x = x_range.x + ((x_range.y - x_range.x) * curand_uniform(&states[tid])); // Lerp
-    float pos_y = y_range.x + ((y_range.y - y_range.x) * curand_uniform(&states[tid]));
-    float heading = heading_range.x + ((heading_range.y - heading_range.x) * curand_uniform(&states[tid]));
+    if (idx >= D_in->size)
+        return;
+
+    curand_init(idx, 0, 0, &states[idx]);
+    float pos_x = x_range.x + ((x_range.y - x_range.x) * curand_uniform(&states[idx]));
+    float pos_y = y_range.x + ((y_range.y - y_range.x) * curand_uniform(&states[idx]));
+    float heading = heading_range.x + ((heading_range.y - heading_range.x) * curand_uniform(&states[idx]));
     heading = std::fmod(heading, 2 * PI);
 
-    C_out->x[tid] = pos_x;
-    C_out->y[tid] = pos_y;
-    C_out->heading[tid] = heading;
+    C_out->x[idx] = pos_x;
+    C_out->y[idx] = pos_y;
+    C_out->heading[idx] = heading;
 }
 
-//# def predict(particles, u, std, dt=1.):
-//# """ move according to control input u (heading change, velocity)
-//# with noise Q (std heading change, std velocity)`"""
 __global__ void PredictGPUKernel(Particles* D_in, Particles* C_out, curandState* states, float* u, float* std, float dt) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    dt = 1.0f;
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    curand_init(tid, 0, 0, &states[tid]);
+    if (idx >= D_in->size)
+        return;
+
+    curand_init(idx, 0, 0, &states[idx]);
 
     //# update heading
-    float heading = D_in->heading[tid];
-    heading += u[0] + (curand_normal(&states[tid]) * std[1]);
+    float heading = D_in->heading[idx];
+    heading += u[0] + (curand_normal(&states[idx]) * std[1]);
     heading = std::fmod(heading, 2 * PI);
 
     //# move in the (noisy) commanded direction
-    float dist = (u[1] * dt) + (curand_uniform(&states[tid]) * std[1]);
-    float pos_x = D_in->x[tid];
-    float pos_y = D_in->y[tid];
+    float dist = (u[1] * dt) + (curand_uniform(&states[idx]) * std[1]);
+    float pos_x = D_in->x[idx];
+    float pos_y = D_in->y[idx];
     pos_x += std::cos(heading) * dist;
     pos_y += std::sin(heading) * dist;
 
-    C_out->x[tid] = pos_x;
-    C_out->y[tid] = pos_y;
-    C_out->heading[tid] = heading;
+    C_out->x[idx] = pos_x;
+    C_out->y[idx] = pos_y;
+    C_out->heading[idx] = heading;
 }
 
 static float SumArrayGPU(const float* const arrIn, const int dim) {

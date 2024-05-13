@@ -340,20 +340,22 @@ static void SimpleResample(Particles* const p) {
 }
 ```
 
+### **Neff**
+
 We don't resample at every epoch. For example, if you received no new measurements you have not received any information from which the resample can benefit. We can determine when to resample by using something called the *effective N*, which approximately measures the number of particles which meaningfully contribute to the probability distribution. The equation for this is
 
 $$\hat{N}_\text{eff} = \frac{1}{\sum w^2}$$
 
 If $\hat{N}_\text{eff}$ falls below some threshold it is time to resample. A useful starting point is $N/2$, but this varies by problem. It is also possible for $\hat{N}_\text{eff} = N$, which means the particle set has collapsed to one point (each has equal weight). It may not be theoretically pure, but if that happens I create a new distribution of particles in the hopes of generating particles with more diversity. If this happens to you often, you may need to increase the number of particles, or otherwise adjust your filter. We will talk more of this later.
 
-### Python implementation
+#### **Python implementation**
 
 ```python
 def neff(weights):
     return 1. / np.sum(np.square(weights))
 ```
 
-### C/C++ implementation
+#### **C/C++ implementation**
 
 ```c++
 static float Neff(const float* const weights, const int dim) {
@@ -373,17 +375,158 @@ static float Neff(const float* const weights, const int dim) {
 
 # GPU Implementation
 
-## Data Structure
+## Data Representation
+
+Structure of arrays
+
+```c++
+typedef struct Particles {
+    float* x;
+    float* y;
+    float* heading;
+    float* weights;
+    unsigned int size;
+};
+```
 
 ## Particle Generation
 
+
+**Kernel**
+```c++
+__global__ void GenerateParticles(Particles* D_in, Particles* C_out, curandState* states, float2 x_range, float2 y_range, float2 heading_range) {
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx >= D_in->size)
+        return;
+
+    curand_init(idx, 0, 0, &states[idx]);
+    float pos_x = x_range.x + ((x_range.y - x_range.x) * curand_uniform(&states[idx]));
+    float pos_y = y_range.x + ((y_range.y - y_range.x) * curand_uniform(&states[idx]));
+    float heading = heading_range.x + ((heading_range.y - heading_range.x) * curand_uniform(&states[idx]));
+    heading = std::fmod(heading, 2 * PI);
+
+    C_out->x[idx] = pos_x;
+    C_out->y[idx] = pos_y;
+    C_out->heading[idx] = heading;
+}
+```
+
 ## Predict Step
+
+**Kernel**
+```c++
+__global__ void PredictGPUKernel(Particles* D_in, Particles* C_out, curandState* states, float* u, float* std, float dt) {
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx >= D_in->size)
+        return;
+
+    curand_init(idx, 0, 0, &states[idx]);
+
+    float heading = D_in->heading[idx];
+    heading += u[0] + (curand_normal(&states[idx]) * std[1]);
+    heading = std::fmod(heading, 2 * PI);
+
+    float dist = (u[1] * dt) + (curand_uniform(&states[idx]) * std[1]);
+    float pos_x = D_in->x[idx];
+    float pos_y = D_in->y[idx];
+    pos_x += std::cos(heading) * dist;
+    pos_y += std::sin(heading) * dist;
+
+    C_out->x[idx] = pos_x;
+    C_out->y[idx] = pos_y;
+    C_out->heading[idx] = heading;
+}
+```
 
 ## Update Step
 
 ## Estimate Step
 
 ## Resampling Step
+
+### **Neff**
+
+```c++
+static float NeffGPU(const float* const weightsIn, const int dim) {
+    float res = 0.0f;
+    float sum = FLT_EPSILON;
+
+    int blockSize = 1024;            // block dim 1D
+    //int numBlock = 1024 * 1024;      // grid dim 1D
+    int numBlock = (dim / blockSize);
+    if (dim % blockSize != 0) {
+        numBlock += 1;
+    }
+
+    long blocksBytes = numBlock * sizeof(float);
+    long arrayBytes = dim * sizeof(float);
+
+    float* weightsOut, * d_weightsIn, * d_weightsOut;
+    CHECK(cudaMalloc((void**)&d_weightsIn, arrayBytes));
+    CHECK(cudaMemcpy(d_weightsIn, weightsIn, arrayBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_weightsOut, blocksBytes));
+    CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
+    weightsOut = (float*)malloc(blocksBytes * sizeof(float));
+
+    SumSquaredParReduce << <numBlock, blockSize >> > (d_weightsIn, d_weightsOut, dim);
+    CHECK(cudaDeviceSynchronize());
+    CHECK(cudaGetLastError());
+
+    // memcopy D2H
+    CHECK(cudaMemcpy(weightsOut, d_weightsOut, blocksBytes, cudaMemcpyDeviceToHost));
+
+    // check result
+    for (uint i = 0; i < numBlock; i++) {
+        sum += weightsOut[i];
+    }
+
+    res = 1.0f / sum;
+
+    cudaFree(d_weightsOut);
+    cudaFree(d_weightsIn);
+    free(weightsOut);
+
+    CHECK(cudaDeviceReset());
+
+    return res;
+}
+```
+
+#### Sum Squared on GPU
+
+```c++
+/*
+ *  Block by block parallel implementation without divergence (interleaved schema)
+ */
+__global__ void SumSquaredParReduce(float* in, float* out, const ulong n) {
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // boundary check
+    if (idx >= n)
+        return;
+
+    // convert global data pointer to the local pointer of this block
+    float* thisBlock = in + blockIdx.x * blockDim.x;
+
+    // in-place reduction in global memory
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride)
+            thisBlock[tid] += (thisBlock[tid + stride] * thisBlock[tid + stride]);
+
+        // synchronize within threadblock
+        __syncthreads();
+    }
+
+    // write result for this block to global mem
+    if (tid == 0)
+        out[blockIdx.x] = thisBlock[0];
+}
+```
 
 # Comparison
 
