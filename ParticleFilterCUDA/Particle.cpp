@@ -59,4 +59,14 @@ void PrintParticle(const Particles* const p, int i)
         p->weights[i]);
 }
 
+long BytesOfParticles(const Particles* const p) {
+    long nBytes = 0;
 
+    // bytes of size
+    nBytes += sizeof(unsigned int);
+
+    // Arrays of float
+    nBytes += 4 * sizeof(float) * p->size;
+
+    return nBytes;
+}
