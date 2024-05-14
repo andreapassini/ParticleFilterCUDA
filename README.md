@@ -442,6 +442,35 @@ __global__ void PredictGPUKernel(Particles* D_in, Particles* C_out, curandState*
 }
 ```
 
+#### Kernel Call
+
+```c++
+static void PredictGPU(Particles* const p, const Float2* const u, const Float2* const std, const float dt) {
+    long particlesBytes = BytesOfParticles(p);
+
+    Particles* d_particlesIn;
+    CHECK(cudaMalloc((void**)&d_particlesIn, particlesBytes));
+    CHECK(cudaMemcpy(d_particlesIn, p, particlesBytes, cudaMemcpyHostToDevice));
+
+    Particles* d_particlesOut;
+    CHECK(cudaMalloc((void**)&d_particlesOut, particlesBytes));
+    CHECK(cudaMemcpy(d_particlesOut, p, particlesBytes, cudaMemcpyHostToDevice));
+
+    uint numBlocks = (p->size + BLOCKSIZE - 1) / BLOCKSIZE;
+    curandState* devStates;
+
+    PredictGPUKernel << <numBlocks, BLOCKSIZE >> > (d_particlesIn, d_particlesOut, devStates, (*u), (*std), dt);
+
+    CHECK(cudaDeviceSynchronize());
+
+    CHECK(cudaMemcpy(p, d_particlesOut, particlesBytes, cudaMemcpyDeviceToHost));
+    CHECK(cudaGetLastError());
+
+    CHECK(cudaFree(d_particlesIn));
+    CHECK(cudaFree(d_particlesOut));
+}
+```
+
 ## Update Step
 
 ## Estimate Step
@@ -525,6 +554,52 @@ __global__ void SumSquaredParReduce(float* in, float* out, const ulong n) {
     // write result for this block to global mem
     if (tid == 0)
         out[blockIdx.x] = thisBlock[0];
+}
+```
+
+```c++
+static float NeffGPU(const float* const weightsIn, const int dim) {
+    float res = 0.0f;
+    float sum = FLT_EPSILON;
+
+    int blockSize = 1024;            // block dim 1D
+    //int numBlock = 1024 * 1024;      // grid dim 1D
+    int numBlock = (dim / blockSize);
+    if (dim % blockSize != 0) {
+        numBlock += 1;
+    }
+
+    long blocksBytes = numBlock * sizeof(float);
+    long arrayBytes = dim * sizeof(float);
+
+    float* weightsOut, * d_weightsIn, * d_weightsOut;
+    CHECK(cudaMalloc((void**)&d_weightsIn, arrayBytes));
+    CHECK(cudaMemcpy(d_weightsIn, weightsIn, arrayBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_weightsOut, blocksBytes));
+    CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
+    weightsOut = (float*)malloc(blocksBytes * sizeof(float));
+
+    SumSquaredParReduce << <numBlock, blockSize >> > (d_weightsIn, d_weightsOut, dim);
+    CHECK(cudaDeviceSynchronize());
+    CHECK(cudaGetLastError());
+
+    // memcopy D2H
+    CHECK(cudaMemcpy(weightsOut, d_weightsOut, blocksBytes, cudaMemcpyDeviceToHost));
+
+    // check result
+    for (uint i = 0; i < numBlock; i++) {
+        sum += weightsOut[i];
+    }
+
+    res = 1.0f / sum;
+
+    cudaFree(d_weightsOut);
+    cudaFree(d_weightsIn);
+    free(weightsOut);
+
+    CHECK(cudaDeviceReset());
+
+    return res;
 }
 ```
 
