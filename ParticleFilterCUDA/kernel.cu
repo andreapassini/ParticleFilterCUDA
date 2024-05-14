@@ -529,6 +529,27 @@ static void EstimateCPU(const Particles* const p, Float2* const mean_out, Float2
     free(pos.x);
     free(pos.y);
 }
+static void EstimateGPU(const Particles* const p, Float2* const mean_out, Float2* const var_out) {
+
+    Floats2 pos;
+    pos.x = (float*)malloc(p->size * sizeof(float));
+    memcpy(pos.x, p->x, p->size * sizeof(float));
+    pos.y = (float*)malloc(p->size * sizeof(float));
+    memcpy(pos.y, p->y, p->size * sizeof(float));
+
+    // mean = np.average(pos, weights = weights, axis = 0)
+    (*mean_out) = WeightedAverage(&pos, p->weights, p->size);
+    // var = np.average((pos - mean) **2, weights = weights, axis = 0)
+    for (int i = 0; i < p->size; i++) {
+        pos.x[i] = (pos.x[i] - mean_out->x) * (pos.x[i] - mean_out->x);
+        pos.y[i] = (pos.y[i] - mean_out->y) * (pos.y[i] - mean_out->y);
+    }
+
+    (*var_out) = WeightedAverage(&pos, p->weights, p->size);
+
+    free(pos.x);
+    free(pos.y);
+}
 
 //def simple_resample(particles, weights) :
 //    N = len(particles)
