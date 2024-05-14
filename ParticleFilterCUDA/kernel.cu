@@ -123,7 +123,7 @@ __global__ void GenerateParticles(Particles* D_in, Particles* C_out, curandState
     C_out->heading[idx] = heading;
 }
 
-__global__ void PredictGPUKernel(Particles* D_in, Particles* C_out, curandState* states, float* u, float*  , float dt) {
+__global__ void PredictGPUKernel(Particles* D_in, Particles* C_out, curandState* states, const Float2 u, const Float2 std, const float dt) {
     uint tid = threadIdx.x;
     ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -134,11 +134,11 @@ __global__ void PredictGPUKernel(Particles* D_in, Particles* C_out, curandState*
 
     //# update heading
     float heading = D_in->heading[idx];
-    heading += u[0] + (curand_normal(&states[idx]) * std[1]);
+    heading += u.x + (curand_normal(&states[idx]) * std.x);
     heading = std::fmod(heading, 2 * PI);
 
     //# move in the (noisy) commanded direction
-    float dist = (u[1] * dt) + (curand_uniform(&states[idx]) * std[1]);
+    float dist = (u.y * dt) + (curand_uniform(&states[idx]) * std.y);
     float pos_x = D_in->x[idx];
     float pos_y = D_in->y[idx];
     pos_x += std::cos(heading) * dist;
@@ -221,6 +221,18 @@ static float magnitudeXY(const Particles* const p) {
     return magnitude;
 }
 
+__device__ float MagnitudeGPU(const float x, const float y) {
+    float mag = sqrt((x * x) + (y * y));
+    return mag;
+}
+__device__ float MagnitudeGPU(const Float2* const vec2) {
+    return MagnitudeGPU(vec2->x, vec2->y);
+
+}
+__device__ float MagnitudeGPU(const Float2 vec2) {
+    return MagnitudeGPU(vec2.x, vec2.y);
+}
+
 static Float2 WeightedAverage(const Floats2* const pos, const float* const weights, const int dim) {
     Float2 avg;
     avg.x = 0.0f;
@@ -296,36 +308,33 @@ static void PredictCPU(Particles* const p, const Float2* const u, const Float2* 
         // move in the(noisy) commanded direction
         p->x[i] += cos(p->heading[i]) * dist;
         p->y[i] += sin(p->heading[i]) * dist;
-
-        //PrintParticle(p, i);
     }
 }
 
 static void PredictGPU(Particles* const p, const Float2* const u, const Float2* const std, const float dt) {
-
-    //__global__ void PredictGPUKernel(Particles * D_in, Particles * C_out, curandState * states, float* u, float* std, float dt) {
+    long particlesBytes = BytesOfParticles(p);
 
     Particles* d_particlesIn;
-    long particlesBytes = BytesOfParticles(p);
     CHECK(cudaMalloc((void**)&d_particlesIn, particlesBytes));
-    CHECK(cudaMemcpy(d_particlesIn->x, p->x, particlesBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(d_particlesIn->y, p->y, particlesBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(d_particlesIn->heading, p->heading, particlesBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(d_particlesIn->weights, p->weights, particlesBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_particlesIn, p, particlesBytes, cudaMemcpyHostToDevice));
 
     Particles* d_particlesOut;
-    long particlesBytes = BytesOfParticles(p);
     CHECK(cudaMalloc((void**)&d_particlesOut, particlesBytes));
-    CHECK(cudaMemcpy(d_particlesOut->x, p->x, particlesBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(d_particlesOut->y, p->y, particlesBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(d_particlesOut->heading, p->heading, particlesBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(d_particlesOut->weights, p->weights, particlesBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_particlesOut, p, particlesBytes, cudaMemcpyHostToDevice));
 
-    dim3 numBlocks = (p->size + BLOCKSIZE - 1) / BLOCKSIZE;
+    uint numBlocks = (p->size + BLOCKSIZE - 1) / BLOCKSIZE;
     curandState* devStates;
-    //__global__ void PredictGPUKernel(Particles * D_in, Particles * C_out, curandState * states, float* u, float* std, float dt) {
-    PredictGPUKernel << <numBlocks, BLOCKSIZE >> > (d_particlesIn, d_particlesOut, devStates, u, std, dt);
 
+    //__global__ void PredictGPUKernel(Particles * D_in, Particles * C_out, curandState * states, float* u, float* std, float dt) {
+    PredictGPUKernel << <numBlocks, BLOCKSIZE >> > (d_particlesIn, d_particlesOut, devStates, (*u), (*std), dt);
+
+    CHECK(cudaDeviceSynchronize());
+
+    CHECK(cudaMemcpy(p, d_particlesOut, particlesBytes, cudaMemcpyDeviceToHost));
+    CHECK(cudaGetLastError());
+
+    CHECK(cudaFree(d_particlesIn));
+    CHECK(cudaFree(d_particlesOut));
 
 }
 
@@ -339,25 +348,27 @@ static void PredictGPU(Particles* const p, const Float2* const u, const Float2* 
 static void UpdateCPU(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks, const int numberOfLandmarks) {
     int size = p->size;
 
+    Floats2 distance;
+    distance.x = (float*)malloc(size * sizeof(float));
+    distance.y = (float*)malloc(size * sizeof(float));
+    float* normPdfs = (float*)malloc(size * sizeof(float));
+    float* distanceMagnitudes = (float*)calloc(size, sizeof(float));
+
     for (int i = 0; i < numberOfLandmarks; i++) {
         //  distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
-        Floats2 distance;
-        distance.x = (float*)malloc(size * sizeof(float));
         memcpy(distance.x, p->x, size * sizeof(float));
-        distance.y = (float*)malloc(size * sizeof(float));
         memcpy(distance.y, p->y, size * sizeof(float));
 
         for (int j = 0; j < size; j++) {    // particles[:, 0 : 2] - landmark
             distance.x[j] -= landmarks->x[i];
             distance.y[j] -= landmarks->y[i];
         }
-        float* distanceMagnitudes = (float*)calloc(size, sizeof(float));
+
         for (int j = 0; j < size; j++) {    // np.linalg.norm
             distanceMagnitudes[j] = Magnitude(distance.x[j], distance.y[j]);
         }
 
         //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
-        float* normPdfs = (float*)malloc(size * sizeof(float));
         for (int j = 0; j < size; j++) { // scipy.stats.norm(distance, R).pdf(z[i])
             normPdfs[j] = normpdf(z[i], distanceMagnitudes[j], R);;
         }
@@ -365,15 +376,15 @@ static void UpdateCPU(Particles* const p, const float const* z, const float R, c
             p->weights[j] *= normPdfs[j];
         }
 
-        free(distance.x);
-        free(distance.y);
-        free(distanceMagnitudes);
-        free(normPdfs);
     }
 
-    float sum = 0.0f;
+    free(distanceMagnitudes);
+    free(normPdfs);
+    free(distance.x);
+    free(distance.y);
+
+    float sum = FLT_EPSILON;  // avoid round - off to zero
     for (int i = 0; i < size; i++) {
-        p->weights[i] += FLT_EPSILON; // avoid round - off to zero
         sum += p->weights[i];
     }
 
@@ -392,7 +403,7 @@ __global__ void UpdateGPUKernel(Particles* const p, const float const* z, const 
         return;
 
     //  distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
-    
+
 
     //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
 
@@ -402,68 +413,43 @@ __global__ void UpdateGPUKernel(Particles* const p, const float const* z, const 
 static void UpdateGPU(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks, const int numberOfLandmarks) {
     int size = p->size;
 
-    ulong particlesBytes = p->size * sizeof(float);
+    long particlesBytes = BytesOfParticles(p);
+
+    Particles* d_particles;
+    CHECK(cudaMalloc((void**)&d_particles, particlesBytes));
+    CHECK(cudaMemcpy(d_particles, p, particlesBytes, cudaMemcpyHostToDevice));
+
+    ulong arrayBytes = p->size * sizeof(float);
+    long landmarkBytes = numberOfLandmarks * sizeof(float);
+
+
 
     float* d_landmarkX, * d_landmarkY;
-    CHECK(cudaMalloc((void**)&d_landmarkX, particlesBytes));
-    CHECK(cudaMemcpy(d_landmarkX, landmarks->x, particlesBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_landmarkY, particlesBytes));
-    CHECK(cudaMemcpy(d_landmarkY, landmarks->y, particlesBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_landmarkX, arrayBytes));
+    CHECK(cudaMemcpy(d_landmarkX, landmarks->x, landmarkBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_landmarkY, arrayBytes));
+    CHECK(cudaMemcpy(d_landmarkY, landmarks->y, landmarkBytes, cudaMemcpyHostToDevice));
 
     float* d_distanceX, * d_distanceY;
-    CHECK(cudaMalloc((void**)&d_distanceX, particlesBytes));
-    CHECK(cudaMemcpy(d_distanceX, p->x, particlesBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_distanceY, particlesBytes));
-    CHECK(cudaMemcpy(d_distanceY, p->y, particlesBytes, cudaMemcpyHostToDevice));
-
-    //float* d_distanceXOut, * d_distanceYOut;
-    //CHECK(cudaMalloc((void**)&d_distanceXOut, particlesBytes));
-    //CHECK(cudaMemset((void*)d_distanceXOut, 0.0f, particlesBytes));
-    //CHECK(cudaMalloc((void**)&d_distanceYOut, particlesBytes));
-    //CHECK(cudaMemset((void*)d_distanceYOut, 0.0f, particlesBytes));
+    CHECK(cudaMalloc((void**)&d_distanceX, arrayBytes));
+    CHECK(cudaMalloc((void**)&d_distanceY, arrayBytes));
 
     float* d_normPdfs;
-    CHECK(cudaMalloc((void**)&d_normPdfs, particlesBytes));
-    CHECK(cudaMemset((void*)d_normPdfs, 0.0f, particlesBytes));
+    CHECK(cudaMalloc((void**)&d_normPdfs, arrayBytes));
+
+    float* d_z;
+    CHECK(cudaMalloc((void**)&d_z, arrayBytes));
+    CHECK(cudaMemcpy(d_z, z, landmarkBytes, cudaMemcpyHostToDevice));
+
+    uint numBlocks = (p->size + BLOCKSIZE - 1) / BLOCKSIZE;
 
     for (int i = 0; i < numberOfLandmarks; i++) {
-        //  distance = np.linalg.norm(particles[:, 0 : 2] - landmark, axis = 1)
+        CHECK(cudaMemcpy(d_distanceX, p->x, arrayBytes, cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_distanceY, p->y, arrayBytes, cudaMemcpyHostToDevice));
+
+        UpdateGPUKernel << <numBlocks, BLOCKSIZE >> > (d_particles, d_z, R, d_landmarkX);
 
 
-
-        Floats2 distance;
-        distance.x = (float*)malloc(size * sizeof(float));
-        memcpy(distance.x, p->x, size * sizeof(float));
-        distance.y = (float*)malloc(size * sizeof(float));
-        memcpy(distance.y, p->y, size * sizeof(float));
-
-        float* weightsOut, * d_weightsIn, * d_weightsOut;
-
-        ulong particlesBytes = p->size * sizeof(Particles);
-        Particles* d_pIn;
-
-        for (int j = 0; j < size; j++) {    // particles[:, 0 : 2] - landmark
-            distance.x[j] -= landmarks->x[i];
-            distance.y[j] -= landmarks->y[i];
-        }
-        float* distanceMagnitudes = (float*)calloc(size, sizeof(float));
-        for (int j = 0; j < size; j++) {    // np.linalg.norm
-            distanceMagnitudes[j] = Magnitude(distance.x[j], distance.y[j]);
-        }
-
-        //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
-        float* normPdfs = (float*)malloc(size * sizeof(float));
-        for (int j = 0; j < size; j++) { // scipy.stats.norm(distance, R).pdf(z[i])
-            normPdfs[j] = normpdf(z[i], distanceMagnitudes[j], R);;
-        }
-        for (int j = 0; j < size; j++) { // weights *=  // element wise multiplication
-            p->weights[j] *= normPdfs[j];
-        }
-
-        free(distance.x);
-        free(distance.y);
-        free(distanceMagnitudes);
-        free(normPdfs);
     }
 
     float sum = 0.0f;
