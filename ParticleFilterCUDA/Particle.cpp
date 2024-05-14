@@ -23,6 +23,7 @@ void Create_Particles(Particles* p, float dim) {
 }
 
 void CreateAndRandomInitialize_Particles(Particles* p, float dim, Float2* xRange, Float2* yRange, Float2* headingRange) {
+
     p->size = dim;
     p->x = (float*)malloc(dim * sizeof(float));
     p->y = (float*)malloc(dim * sizeof(float));

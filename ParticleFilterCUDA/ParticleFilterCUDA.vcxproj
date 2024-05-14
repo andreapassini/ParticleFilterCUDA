@@ -56,9 +56,11 @@
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <AdditionalOptions>-arch=sm_70 %(AdditionalOptions)</AdditionalOptions>
+      <ExtensibleWholeProgramCompilation>true</ExtensibleWholeProgramCompilation>
     </CudaCompile>
     <CudaLink>
       <AdditionalOptions>-arch=sm_70 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalDependencies>cudadevrt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </CudaLink>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">

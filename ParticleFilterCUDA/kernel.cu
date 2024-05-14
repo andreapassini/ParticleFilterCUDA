@@ -8,6 +8,7 @@
 #ifndef __CUDACC__ 
 #define __CUDACC__
 #endif
+
 #include <device_functions.h>
 #include <curand_kernel.h>
 #include <cuda.h>
@@ -27,7 +28,7 @@
 #define IDX(i,j,n) (i*n+j)
 #define ABS(x,y) (x-y>=0?x-y:y-x)
 
-#define DIM 1'000'000
+#define DIM 10'000
 
 #define BLOCKSIZE 1024  // block dim 1D
 #define NUMBLOCKS 1024  // grid dim 1D 
@@ -518,7 +519,6 @@ static float* CumSum(const float* const arr_in, const int dim) {
 
     return cumSumArr;
 }
-
 static float* CumSumGPU(const float* const arr_in, const int dim) {
     float* cumSumArr = (float*)malloc(dim * sizeof(float));
 
@@ -541,6 +541,52 @@ static int SearchSorted(const float* const sortedArry, const float element, cons
 
     return index;
 }
+__global__ void SearchSortedGPU(const float* const sortedArry, const int dim, const float element, int* const indexOut, const ulong resPosition) {
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx >= dim)
+        return;
+
+    if (element <= sortedArry[idx] && element > sortedArry[idx + 1]) {
+        indexOut[resPosition] = sortedArry[idx];
+    }
+}
+
+__global__ void SimpleResampleGPUKernel(
+    const Particles* const particles, Particles* const particlesOut,
+    const float* const sortedArry, const int dim, curandState* states,
+    int* const indexOut, const float equalWeight) {
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx >= dim)
+        return;
+
+    curand_init(idx, 0, 0, &states[idx]);
+    float element = curand_uniform(&states[idx]);
+
+    dim3 grid(gridDim.x);
+    dim3 block(blockDim.x);
+
+    // SearchSortedGPU
+    // Starts with indexFound = dim -1
+    // So search sorted will not branch that much
+    SearchSortedGPU << <grid, block >> > (sortedArry, dim - 1, element, indexOut, idx);
+
+    // Wait for the child kernel to be finished
+    //cudaDeviceSynchronize();  // deprecated, nice
+
+    // When all the indexes are found
+    __syncthreads();
+
+    // resample according to indexes
+    particlesOut->x[idx] = particles->x[indexOut[idx]];
+    particlesOut->y[idx] = particles->y[indexOut[idx]];
+    particlesOut->heading[idx] = particles->heading[indexOut[idx]];
+    particlesOut->weights[idx] = equalWeight;
+}
+
 
 __global__ void DivisionKernel(float* const dividend, const uint dividendDim, const float divisor) {
     uint tid = threadIdx.x;
@@ -593,7 +639,6 @@ static void PredictCPU(Particles* const p, const Float2* const u, const Float2* 
         p->y[i] += sin(p->heading[i]) * dist;
     }
 }
-
 static void PredictGPU(Particles* const p, const Float2* const u, const Float2* const std, const float dt) {
     long particlesBytes = BytesOfParticles(p);
 
@@ -673,8 +718,6 @@ static void UpdateCPU(Particles* const p, const float const* z, const float R, c
         p->weights[i] /= sum; // normalize
     }
 }
-
-//# def update(particles, weights, z, R, landmarks):
 __global__ void UpdateGPUKernel(Particles* const p, float* distanceX, float* distanceY, const float const* z, const float R, const Float2 landmark) {
     uint tid = threadIdx.x;
     ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -706,7 +749,6 @@ __global__ void UpdateGPUKernel(Particles* const p, float* distanceX, float* dis
     //}
     p->weights[idx] *= normPdf;
 }
-
 static void UpdateGPU(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks, const int numberOfLandmarks) {
     int size = p->size;
 
@@ -810,6 +852,64 @@ static void EstimateGPU(const Particles* const p, Float2* const mean_out, Float2
     free(pos.y);
 }
 
+// We don't resample at every epoch. 
+// For example, if you received no new measurements you have not received any information from which the resample can benefit. 
+// We can determine when to resample by using something called the *effective N*, 
+// which approximately measures the number of particles which meaningfully contribute to the probability distribution.
+//def neff(weights) :
+//    return 1. / np.sum(np.square(weights))
+static float Neff(const float* const weights, const int dim) {
+    float res = 0.0f;
+    float sum = FLT_EPSILON;
+
+    for (int i = 0; i < dim; i++) {
+        float squaredWeight = weights[i] * weights[i];
+        sum += squaredWeight;
+    }
+
+    res = 1.0f / sum;
+    return res;
+}
+static float NeffGPU(const float* const weightsIn, const int dim) {
+    float res = 0.0f;
+    float sum = FLT_EPSILON;
+
+    uint numBlock = (dim + BLOCKSIZE - 1) / BLOCKSIZE;
+
+
+    long blocksBytes = numBlock * sizeof(float);
+    long arrayBytes = dim * sizeof(float);
+
+    float* weightsOut, * d_weightsIn, * d_weightsOut;
+    CHECK(cudaMalloc((void**)&d_weightsIn, arrayBytes));
+    CHECK(cudaMemcpy(d_weightsIn, weightsIn, arrayBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_weightsOut, blocksBytes));
+    CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
+    weightsOut = (float*)malloc(blocksBytes * sizeof(float));
+
+    SumSquaredParReduce << <numBlock, BLOCKSIZE >> > (d_weightsIn, d_weightsOut, dim);
+    CHECK(cudaDeviceSynchronize());
+    CHECK(cudaGetLastError());
+
+    // memcopy D2H
+    CHECK(cudaMemcpy(weightsOut, d_weightsOut, blocksBytes, cudaMemcpyDeviceToHost));
+
+    // check result
+    for (uint i = 0; i < numBlock; i++) {
+        sum += weightsOut[i];
+    }
+
+    res = 1.0f / sum;
+
+    cudaFree(d_weightsOut);
+    cudaFree(d_weightsIn);
+    free(weightsOut);
+
+    CHECK(cudaDeviceReset());
+
+    return res;
+}
+
 //def simple_resample(particles, weights) :
 //    N = len(particles)
 //    cumulative_sum = np.cumsum(weights)
@@ -852,93 +952,48 @@ static void SimpleResampleGPU(Particles* const p) {
     int dim = p->size;
 
     //    cumulative_sum = np.cumsum(weights)
-    float* cumSum_arr = CumSum(p->weights, dim);
+    float* cumSum_arr = CumSumGPU(p->weights, dim);
 
-    // indexes = np.searchsorted(cumulative_sum, random(N))  // Return random floats in the half-open interval [0.0, 1.0).
-    int* indexes = (int*)malloc(dim * sizeof(int));
-    srand((unsigned int)time(NULL));   // Initialization, should only be called once.
-    float r = 0.0f;
-    for (int i = 0; i < dim; i++) {
-        r = ((float)rand() / (float)(RAND_MAX));      // rand Returns a pseudo-random integer between 0 and RAND_MAX.
-        indexes[i] = SearchSorted(cumSum_arr, r, dim);
-    }
+    uint numBlocks = (dim + BLOCKSIZE - 1) / BLOCKSIZE;
 
-    //  # resample according to indexes
-    //  particles[:] = particles[indexes]
-    //  weights.fill(1.0 / N)
+    ulong arrayBytes = dim * sizeof(float);
+
+    curandState* devStates;
+    // SearchSortedGPU
+    // Starts with indexFound = dim -1
+    // So search sorted will not branch that much
+    int* indexFound = (int*)malloc(arrayBytes);
+    memset(indexFound, dim - 1, arrayBytes);
+
     float equalWeight = 1.0f / dim;
-    for (int i = 0; i < dim; i++) {
-        p->x[i] = p->x[indexes[i]];
-        p->y[i] = p->y[indexes[i]];
-        p->heading[i] = p->heading[indexes[i]];
-        p->weights[i] = equalWeight;
-    }
 
-    free(indexes);
-    free(cumSum_arr);
-}
+    float* d_cumSum_arr;
+    CHECK(cudaMalloc((void**)&d_cumSum_arr, arrayBytes));
+    CHECK(cudaMemcpy(d_cumSum_arr, cumSum_arr, arrayBytes, cudaMemcpyHostToDevice));
 
-// We don't resample at every epoch. 
-// For example, if you received no new measurements you have not received any information from which the resample can benefit. 
-// We can determine when to resample by using something called the *effective N*, 
-// which approximately measures the number of particles which meaningfully contribute to the probability distribution.
-//def neff(weights) :
-//    return 1. / np.sum(np.square(weights))
-static float Neff(const float* const weights, const int dim) {
-    float res = 0.0f;
-    float sum = FLT_EPSILON;
+    int* d_indexFound;
+    CHECK(cudaMalloc((void**)&d_indexFound, p->size * sizeof(int)));
+    CHECK(cudaMemset((void*)d_indexFound, dim - 1, p->size * sizeof(int)));
 
-    for (int i = 0; i < dim; i++) {
-        float squaredWeight = weights[i] * weights[i];
-        sum += squaredWeight;
-    }
+    Particles* d_particles, * d_particlesOut;
+    ulong particlesBytes = BytesOfParticles(p);
+    CHECK(cudaMalloc((void**)&d_particles, particlesBytes));
+    CHECK(cudaMemcpy(d_particles, p, particlesBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_particlesOut, particlesBytes));
+    // it does not need to be initialized since we will overwrite the value of every element
 
-    res = 1.0f / sum;
-    return res;
-}
+    SimpleResampleGPUKernel<<<numBlocks , BLOCKSIZE>>>(d_particles, d_particlesOut, cumSum_arr, dim, devStates, d_indexFound, equalWeight);
 
-static float NeffGPU(const float* const weightsIn, const int dim) {
-    float res = 0.0f;
-    float sum = FLT_EPSILON;
-
-    int blockSize = 1024;            // block dim 1D
-    //int numBlock = 1024 * 1024;      // grid dim 1D
-    int numBlock = (dim / blockSize);
-    if (dim % blockSize != 0) {
-        numBlock += 1;
-    }
-
-    long blocksBytes = numBlock * sizeof(float);
-    long arrayBytes = dim * sizeof(float);
-
-    float* weightsOut, * d_weightsIn, * d_weightsOut;
-    CHECK(cudaMalloc((void**)&d_weightsIn, arrayBytes));
-    CHECK(cudaMemcpy(d_weightsIn, weightsIn, arrayBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_weightsOut, blocksBytes));
-    CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
-    weightsOut = (float*)malloc(blocksBytes * sizeof(float));
-
-    SumSquaredParReduce << <numBlock, blockSize >> > (d_weightsIn, d_weightsOut, dim);
     CHECK(cudaDeviceSynchronize());
+    CHECK(cudaMemcpy(indexFound, d_indexFound, arrayBytes, cudaMemcpyDeviceToHost));
     CHECK(cudaGetLastError());
 
-    // memcopy D2H
-    CHECK(cudaMemcpy(weightsOut, d_weightsOut, blocksBytes, cudaMemcpyDeviceToHost));
-
-    // check result
-    for (uint i = 0; i < numBlock; i++) {
-        sum += weightsOut[i];
-    }
-
-    res = 1.0f / sum;
-
-    cudaFree(d_weightsOut);
-    cudaFree(d_weightsIn);
-    free(weightsOut);
+    cudaFree(d_cumSum_arr);
+    cudaFree(d_indexFound);
+    cudaFree(d_particles);
+    cudaFree(d_particlesOut);
 
     CHECK(cudaDeviceReset());
-
-    return res;
 }
 
 /*
@@ -1002,38 +1057,95 @@ __global__ void Norm_BlockUnroll8(float* in, float* out, const float add, const 
 
 
 void particleFilterGPU(Particles* const p, const int iterations, const float sensorStdError) {
+    clock_t start, stop;
+    double timer;
 
-    Particles d_p;
+    printf(" - particleFilter GPU - \n");
 
-    CHECK(cudaMalloc((void**)&d_p.x, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_p.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_p.y, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_p.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_p.weights, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_p.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_p.heading, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_p.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    unsigned int dim = p->size;
 
-    // OUTPUT for Device
-    Particles d_out;
-    CHECK(cudaMalloc((void**)&d_out.x, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_out.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_out.y, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_out.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_out.weights, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_out.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_out.heading, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_out.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice));
+    printf("number of particles: %d \n", dim);
 
+    start = clock();
 
-    cudaFree(d_p.x);
-    cudaFree(d_p.y);
-    cudaFree(d_p.heading);
-    cudaFree(d_p.weights);
-    cudaFree(d_out.x);
-    cudaFree(d_out.y);
-    cudaFree(d_out.heading);
-    cudaFree(d_out.weights);
+    // Start
+
+    Float2 u;
+    Float2 std;
+    float dt = 0.1f;
+
+    Floats2 landmarks;
+    int numberOfLandmarks = 4;
+    landmarks.x = (float*)malloc(numberOfLandmarks * sizeof(float));
+    landmarks.y = (float*)malloc(numberOfLandmarks * sizeof(float));
+
+    landmarks.x[0] = -1.0f;
+    landmarks.y[0] = 2.0f;
+
+    landmarks.x[1] = 5.0f;
+    landmarks.y[1] = 10.0f;
+
+    landmarks.x[2] = 12.0f;
+    landmarks.y[2] = 24.0f;
+
+    landmarks.x[3] = 18.0f;
+    landmarks.y[3] = 21.0f;
+
+    Float2 robotPosition;
+    robotPosition.x = 0.0f;
+    robotPosition.y = 0.0f;
+
+    Float2* xs;
+    xs = (Float2*)malloc(iterations * sizeof(Float2));
+
+    for (int i = 0; i < iterations; i++) {
+        // Diagonal movement
+        robotPosition.x += 1.0f;
+        robotPosition.y += 1.0f;
+
+        srand((unsigned int)time(NULL));   // Initialization, should only be called once.
+        float r = 0.0f;
+        float* zs = (float*)malloc(numberOfLandmarks * sizeof(float));
+        for (int j = 0; j < numberOfLandmarks; j++) {
+            Float2 landmark;
+            landmark.x = landmarks.x[j];
+            landmark.y = landmarks.y[j];
+            Float2 distanceRobotLandmark = Minus(&landmark, &robotPosition);
+            float magnitudeDistance = Magnitude(distanceRobotLandmark);
+            r = ((float)rand() / (float)(RAND_MAX));      // rand Returns a pseudo-random integer between 0 and RAND_MAX.
+            zs[j] = magnitudeDistance + (r * sensorStdError);
+        }
+
+        PredictGPU(p, &u, &std, dt);
+
+        UpdateGPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
+
+        float neff = NeffGPU(p->weights, p->size);
+        if (neff < p->size / 2.0f) {
+            // resample
+            SimpleResampleGPU(p);
+        }
+
+        Float2 var;
+        Float2 mean;
+
+        EstimateGPU(p, &mean, &var);
+
+        xs[i] = mean;
+
+        free(zs);
+    }
+
+    // End
+
+    stop = clock();
+    timer = ((double)(stop - start)) / (double)CLOCKS_PER_SEC;
+    printf("\n\n Total execution time: %9.4f sec \n\n", timer);
+
+    free(landmarks.x);
+    free(landmarks.y);
+    free(xs);
+
 }
 
 void particleFilterCPU(Particles* const p, const int iterations, const float sensorStdError) {
@@ -1099,14 +1211,6 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
         PredictCPU(p, &u, &std, dt);
 
         UpdateCPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
-
-        //# resample if too few effective particles
-        //    if neff(weights) < N / 2:
-        //indexes = systematic_resample(weights)
-        //    resample_from_index(particles, weights, indexes)
-        //    assert np.allclose(weights, 1 / N)
-        //mu, var = estimate(particles, weights)
-        //xs.append(mu)
 
         float neff = Neff(p->weights, p->size);
         if (neff < p->size / 2.0f) {
@@ -1212,9 +1316,8 @@ int main()
 
     CreateAndRandomInitialize_Particles(&p, DIM, &xRange, &yRange, &headingRange);
 
-    //particleFilterGPU(&p);
-
-    particleFilterCPU(&p, 18, 0.1f);
+    //particleFilterCPU(&p, 18, 0.1f);
+    particleFilterGPU(&p, 18, 0.1f);
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.
