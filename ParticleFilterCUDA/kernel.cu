@@ -22,26 +22,7 @@
 #include "Particle.h"
 #include "Float2.h"
 
-#define PI 3.141592f
-#define PI2 2.0f * PI
-
-#define IDX(i,j,n) (i*n+j)
-#define ABS(x,y) (x-y>=0?x-y:y-x)
-
-#define DIM 10'000
-
-#define BLOCKSIZE 1024  // block dim 1D
-#define NUMBLOCKS 1024  // grid dim 1D 
-#define N (NUMBLOCKS * BLOCKSIZE)
-
-#define MinX 0.0f
-#define MaxX 1000.0f
-
-#define MinY 0.0f
-#define MaxY 1000.0f
-
-#define MinHeading 0.0f
-#define MaxHeading 3.0f
+#include "MyDefs.h"
 
 __global__ void addKernel(int* c, const int* a, const int* b)
 {
@@ -114,7 +95,7 @@ __global__ void GenerateParticles(Particles* D_in, Particles* C_out, curandState
     uint tid = threadIdx.x;
     ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (idx >= D_in->size)
+    if (idx >= N)
         return;
 
     curand_init(idx, 0, 0, &states[idx]);

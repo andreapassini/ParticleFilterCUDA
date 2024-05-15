@@ -6,7 +6,7 @@
 
 #include "Float2.h"
 
-#define PI2 2.0f * 3.141592f
+#include "MyDefs.h"
 
 float Lerp(float A, float B, float factor)
 {
@@ -15,20 +15,12 @@ float Lerp(float A, float B, float factor)
 }
 
 void Create_Particles(Particles* p, float dim) {
-    p->size = dim;
-    p->x = (float*)malloc(dim * sizeof(float));
-    p->y = (float*)malloc(dim * sizeof(float));
-    p->heading = (float*)malloc(dim * sizeof(float));
-    p->weights = (float*)malloc(dim * sizeof(float));
+    p = (Particles*)malloc(sizeof(Particles));
 }
 
 void CreateAndRandomInitialize_Particles(Particles* p, float dim, Float2* xRange, Float2* yRange, Float2* headingRange) {
 
-    p->size = dim;
-    p->x = (float*)malloc(dim * sizeof(float));
-    p->y = (float*)malloc(dim * sizeof(float));
-    p->heading = (float*)malloc(dim * sizeof(float));
-    p->weights = (float*)malloc(dim * sizeof(float));
+    p = (Particles*)malloc(sizeof(Particles));
 
     srand((unsigned int)time(NULL));   // Initialization, should only be called once.
     float r = 0.0f;
@@ -58,16 +50,4 @@ void PrintParticle(const Particles* const p, int i)
         p->y[i],
         p->heading[i],
         p->weights[i]);
-}
-
-long BytesOfParticles(const Particles* const p) {
-    long nBytes = 0;
-
-    // bytes of size
-    nBytes += sizeof(unsigned int);
-
-    // Arrays of float
-    nBytes += 4 * sizeof(float) * p->size;
-
-    return nBytes;
 }
