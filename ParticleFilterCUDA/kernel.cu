@@ -109,8 +109,11 @@ __global__ void GenerateParticles(Particles* D_in, Particles* C_out, curandState
     C_out->heading[idx] = heading;
 }
 
-static float SumArrayGPU(const float* const arrIn, const int dim) {
-    float sum = FLT_EPSILON;
+static float SumArrayGPU(const float* const arrIn, const int dim, float* const sumOut) {
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float seconds = 0.0f;
 
     uint numBlocks = (dim + BLOCKSIZE - 1) / BLOCKSIZE;
 
@@ -124,8 +127,22 @@ static float SumArrayGPU(const float* const arrIn, const int dim) {
     CHECK(cudaMemset((void*)d_arrOut, 0, blocksBytes));
     arrOut = (float*)malloc(blocksBytes * sizeof(float));
 
+    cudaEventRecord(start);
+
     SumParReduce << <numBlocks, BLOCKSIZE >> > (d_arrIn, d_arrOut, dim);
-    CHECK(cudaDeviceSynchronize());
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float iterMilliseconds = 0;
+    cudaEventElapsedTime(&iterMilliseconds, start, stop);
+    float iterSeconds = iterMilliseconds / 1000.0f;
+    seconds += iterSeconds;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    //CHECK(cudaDeviceSynchronize());
     CHECK(cudaGetLastError());
 
     // memcopy D2H
@@ -133,7 +150,7 @@ static float SumArrayGPU(const float* const arrIn, const int dim) {
 
     // check result
     for (uint i = 0; i < numBlocks; i++) {
-        sum += arrOut[i];
+        *sumOut += arrOut[i];
     }
 
     cudaFree(d_arrOut);
@@ -142,7 +159,7 @@ static float SumArrayGPU(const float* const arrIn, const int dim) {
 
     //CHECK(cudaDeviceReset());
 
-    return sum;
+    return seconds;
 }
 
 __global__ void SumArrayWeightsGPUKernel(float* weights, float* posX, float* posY, float* outWeights, float* outPosY, float* outPosX, ulong n) {
@@ -164,7 +181,8 @@ __global__ void SumArrayWeightsGPUKernel(float* weights, float* posX, float* pos
             thisBlockPosX[tid] = (thisBlockPosX[tid] * thisBlockWeights[tid]) + (thisBlockPosX[tid + stride] * thisBlockWeights[tid + stride]);
             thisBlockPosY[tid] = (thisBlockPosY[tid] * thisBlockWeights[tid]) + (thisBlockPosY[tid + stride] * thisBlockWeights[tid + stride]);
             thisBlockWeights[tid] += thisBlockWeights[tid + stride];
-        } else if (tid < stride) {
+        }
+        else if (tid < stride) {
             thisBlockPosX[tid] += thisBlockPosX[tid + stride];
             thisBlockPosY[tid] += thisBlockPosY[tid + stride];
             thisBlockWeights[tid] += thisBlockWeights[tid + stride];
@@ -182,7 +200,7 @@ __global__ void SumArrayWeightsGPUKernel(float* weights, float* posX, float* pos
     }
 
 }
-__global__ void SumArrayWeightsSqrdSubGPUKernel(float* weights, float* posX, float* posY, float* outWeights, float* outPosY, 
+__global__ void SumArrayWeightsSqrdSubGPUKernel(float* weights, float* posX, float* posY, float* outWeights, float* outPosY,
     float* outPosX, ulong n, const float meanX, const float meanY) {
     uint tid = threadIdx.x;
     ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -206,7 +224,8 @@ __global__ void SumArrayWeightsSqrdSubGPUKernel(float* weights, float* posX, flo
             thisBlockPosY[tid] = (thisBlockPosY[tid] * thisBlockWeights[tid]) + (thisBlockPosY[tid + stride] * thisBlockWeights[tid + stride]);
 
             thisBlockWeights[tid] += thisBlockWeights[tid + stride];
-        } else if (tid < stride) {
+        }
+        else if (tid < stride) {
             thisBlockPosX[tid] += thisBlockPosX[tid + stride];
             thisBlockPosY[tid] += thisBlockPosY[tid + stride];
             thisBlockWeights[tid] += thisBlockWeights[tid + stride];
@@ -224,75 +243,14 @@ __global__ void SumArrayWeightsSqrdSubGPUKernel(float* weights, float* posX, flo
     }
 
 }
-static float3 SumArrayWeightsGPU(const float* const posX, const float* const posY, const float* const weights, const int dim) {
-    float sumX = FLT_EPSILON;
-    float sumY = FLT_EPSILON;
-    float sumWeights = FLT_EPSILON;
-     
-    uint numBlocks = (dim + BLOCKSIZE - 1) / BLOCKSIZE;
+static float SumArrayWeightsGPU(const float* const posX, const float* const posY, const float* const weights,
+    const int dim, float3* const sumsOut) {
 
-    long blocksBytes = numBlocks * sizeof(float);
-    long arrayBytes = dim * sizeof(float);
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float seconds = 0.0f;
 
-    float* d_weights, * d_weightsOut, * weightsOut;
-    CHECK(cudaMalloc((void**)&d_weights, arrayBytes));
-    CHECK(cudaMemcpy(d_weights, weights, arrayBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_weightsOut, blocksBytes));
-    CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
-    weightsOut = (float*)malloc(blocksBytes * sizeof(float));
-
-    float* d_posX, *d_posXOut, * posXOut;
-    CHECK(cudaMalloc((void**)&d_posX, arrayBytes));
-    CHECK(cudaMemcpy(d_posX, posX, arrayBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_posXOut, blocksBytes));
-    CHECK(cudaMemset((void*)d_posXOut, 0, blocksBytes));
-    posXOut = (float*)malloc(blocksBytes * sizeof(float));
-
-    float* d_posY, * d_posYOut, * posYOut;
-    CHECK(cudaMalloc((void**)&d_posY, arrayBytes));
-    CHECK(cudaMemcpy(d_posY, posY, arrayBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_posYOut, blocksBytes));
-    CHECK(cudaMemset((void*)d_posYOut, 0, blocksBytes));
-    posYOut = (float*)malloc(blocksBytes * sizeof(float));
-
-    SumArrayWeightsGPUKernel << <numBlocks, BLOCKSIZE >> > (d_weights, d_posX, d_posY, d_weightsOut, d_posXOut, d_posYOut, dim);
-    CHECK(cudaDeviceSynchronize());
-    CHECK(cudaGetLastError());
-
-    // memcopy D2H
-    CHECK(cudaMemcpy(weightsOut, d_weightsOut, blocksBytes, cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(posXOut, d_posXOut, blocksBytes, cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(posYOut, d_posYOut, blocksBytes, cudaMemcpyDeviceToHost));
-
-    // check result
-    for (uint i = 0; i < numBlocks; i++) {
-        sumX += posXOut[i];
-        sumY += posYOut[i];
-        sumWeights += weightsOut[i];
-    }
-
-    cudaFree(d_weights);
-    cudaFree(d_weightsOut);
-    free(weightsOut);
-
-    cudaFree(d_posX);
-    cudaFree(d_posXOut);
-    free(posXOut);
-
-    cudaFree(d_posY);
-    cudaFree(d_posYOut);
-    free(posYOut);
-
-    //CHECK(cudaDeviceReset());
-
-    float3 sums;
-    sums.x = sumX;
-    sums.y = sumY;
-    sums.z = sumWeights;
-
-    return sums;
-}
-static float3 SumArrayWeightsSqrdSubGPU(const float* const posX, const float* const posY, const float* const weights, const int dim, const float meanX, const float meanY) {
     float sumX = FLT_EPSILON;
     float sumY = FLT_EPSILON;
     float sumWeights = FLT_EPSILON;
@@ -323,8 +281,22 @@ static float3 SumArrayWeightsSqrdSubGPU(const float* const posX, const float* co
     CHECK(cudaMemset((void*)d_posYOut, 0, blocksBytes));
     posYOut = (float*)malloc(blocksBytes * sizeof(float));
 
-    SumArrayWeightsSqrdSubGPUKernel << <numBlocks, BLOCKSIZE >> > (d_weights, d_posX, d_posY, d_weightsOut, d_posXOut, d_posYOut, dim, meanX, meanY);
-    CHECK(cudaDeviceSynchronize());
+    cudaEventRecord(start);
+
+    SumArrayWeightsGPUKernel << <numBlocks, BLOCKSIZE >> > (d_weights, d_posX, d_posY, d_weightsOut, d_posXOut, d_posYOut, dim);
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float iterMilliseconds = 0;
+    cudaEventElapsedTime(&iterMilliseconds, start, stop);
+    float iterSeconds = iterMilliseconds / 1000.0f;
+    seconds += iterSeconds;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    //CHECK(cudaDeviceSynchronize());
     CHECK(cudaGetLastError());
 
     // memcopy D2H
@@ -353,12 +325,99 @@ static float3 SumArrayWeightsSqrdSubGPU(const float* const posX, const float* co
 
     //CHECK(cudaDeviceReset());
 
-    float3 sums;
-    sums.x = sumX;
-    sums.y = sumY;
-    sums.z = sumWeights;
+    sumsOut->x = sumX;
+    sumsOut->y = sumY;
+    sumsOut->z = sumWeights;
 
-    return sums;
+    return seconds;
+}
+static float SumArrayWeightsSqrdSubGPU(const float* const posX, const float* const posY,
+    const float* const weights, const int dim, const float meanX, const float meanY, float3* const sumsOut) {
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float seconds = 0.0f;
+
+    float sumX = FLT_EPSILON;
+    float sumY = FLT_EPSILON;
+    float sumWeights = FLT_EPSILON;
+
+    uint numBlocks = (dim + BLOCKSIZE - 1) / BLOCKSIZE;
+
+    long blocksBytes = numBlocks * sizeof(float);
+    long arrayBytes = dim * sizeof(float);
+
+    float* d_weights, * d_weightsOut, * weightsOut;
+    CHECK(cudaMalloc((void**)&d_weights, arrayBytes));
+    CHECK(cudaMemcpy(d_weights, weights, arrayBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_weightsOut, blocksBytes));
+    CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
+    weightsOut = (float*)malloc(blocksBytes * sizeof(float));
+
+    float* d_posX, * d_posXOut, * posXOut;
+    CHECK(cudaMalloc((void**)&d_posX, arrayBytes));
+    CHECK(cudaMemcpy(d_posX, posX, arrayBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_posXOut, blocksBytes));
+    CHECK(cudaMemset((void*)d_posXOut, 0, blocksBytes));
+    posXOut = (float*)malloc(blocksBytes * sizeof(float));
+
+    float* d_posY, * d_posYOut, * posYOut;
+    CHECK(cudaMalloc((void**)&d_posY, arrayBytes));
+    CHECK(cudaMemcpy(d_posY, posY, arrayBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_posYOut, blocksBytes));
+    CHECK(cudaMemset((void*)d_posYOut, 0, blocksBytes));
+    posYOut = (float*)malloc(blocksBytes * sizeof(float));
+
+    cudaEventRecord(start);
+
+    SumArrayWeightsSqrdSubGPUKernel << <numBlocks, BLOCKSIZE >> > (d_weights, d_posX, d_posY, d_weightsOut, d_posXOut, d_posYOut, dim, meanX, meanY);
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float iterMilliseconds = 0;
+    cudaEventElapsedTime(&iterMilliseconds, start, stop);
+    float iterSeconds = iterMilliseconds / 1000.0f;
+    seconds += iterSeconds;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    //CHECK(cudaDeviceSynchronize());
+    CHECK(cudaGetLastError());
+
+    // memcopy D2H
+    CHECK(cudaMemcpy(weightsOut, d_weightsOut, blocksBytes, cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(posXOut, d_posXOut, blocksBytes, cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(posYOut, d_posYOut, blocksBytes, cudaMemcpyDeviceToHost));
+
+    // check result
+    for (uint i = 0; i < numBlocks; i++) {
+        sumX += posXOut[i];
+        sumY += posYOut[i];
+        sumWeights += weightsOut[i];
+    }
+
+    cudaFree(d_weights);
+    cudaFree(d_weightsOut);
+    free(weightsOut);
+
+    cudaFree(d_posX);
+    cudaFree(d_posXOut);
+    free(posXOut);
+
+    cudaFree(d_posY);
+    cudaFree(d_posYOut);
+    free(posYOut);
+
+    //CHECK(cudaDeviceReset());
+
+    sumsOut->x = sumX;
+    sumsOut->y = sumY;
+    sumsOut->z = sumWeights;
+
+    return seconds;
 }
 
 
@@ -424,43 +483,38 @@ static Float2 WeightedAverage(const Floats2* const pos, const float* const weigh
 
     return avg;
 }
-static Float2 WeightedAverageGPU(const Floats2* const pos, const float* const weights, const int dim) {
+static float WeightedAverageGPU(const Floats2* const pos, const float* const weights, const int dim, Float2* const average) {
     ulong arrayBytes = dim * sizeof(float);
+    float seconds = 0.0f;
 
-    Float2 avg;
-    avg.x = 0.0f;
-    avg.y = 0.0f;
+    float3 sums;
+    sums.x = 0.0f;
+    sums.y = 0.0f;
+    sums.z = 0.0f;
 
-    // numpy implementation: avg = sum(a * weights) / sum(weights)
-    //float sumWeights = FLT_EPSILON; // avoid div by 0
-    //Float2 sumPos;
-    //sumPos.x = 0.0f;
-    //sumPos.y = 0.0f;
-    //for (int i = 0; i < dim; i++) {
-    //    sumPos.x += pos->x[i] * weights[i];
-    //    sumPos.y += pos->y[i] * weights[i];
-    //    sumWeights += weights[i];
-    //}
-    float3 sums = SumArrayWeightsGPU(pos->x, pos->y, weights, dim);
+    seconds += SumArrayWeightsGPU(pos->x, pos->y, weights, dim, &sums);
 
-    avg.x = sums.x / sums.z;
-    avg.y = sums.y / sums.z;
+    average->x = sums.x / sums.z;
+    average->y = sums.y / sums.z;
 
-    return avg;
+    return seconds;
 }
-static Float2 WeightedAverageSqrdSubGPU(const Floats2* const pos, const float* const weights, const int dim, float meanX, float meanY) {
+static float WeightedAverageSqrdSubGPU(const Floats2* const pos, const float* const weights,
+    const int dim, float meanX, float meanY, Float2* const average) {
+
     ulong arrayBytes = dim * sizeof(float);
 
-    Float2 avg;
-    avg.x = 0.0f;
-    avg.y = 0.0f;
+    float3 sums;
+    sums.x = 0.0f;
+    sums.y = 0.0f;
+    sums.z = 0.0f;
 
-    float3 sums = SumArrayWeightsSqrdSubGPU(pos->x, pos->y, weights, dim, meanX, meanY);
+    float seconds = SumArrayWeightsSqrdSubGPU(pos->x, pos->y, weights, dim, meanX, meanY, &sums);
 
-    avg.x = sums.x / sums.z;
-    avg.y = sums.y / sums.z;
+    average->x = sums.x / sums.z;
+    average->y = sums.y / sums.z;
 
-    return avg;
+    return seconds;
 }
 
 static float* CumSum(const float* const arr_in, const int dim) {
@@ -474,14 +528,14 @@ static float* CumSum(const float* const arr_in, const int dim) {
 
     return cumSumArr;
 }
-static float* CumSumGPU(const float* const arr_in, const int dim) {
-    float* cumSumArr = (float*)malloc(dim * sizeof(float));
+static float CumSumGPU(const float* const arr_in, const int dim, float* const cumSumArr) {
+    float seconds = 0.0f;
 
     for (int i = 0; i < dim; i++) {
-        cumSumArr[i] = SumArrayGPU(arr_in, i + 1);  // + 1 for the size of the subArr
+        seconds += SumArrayGPU(arr_in, i + 1, &cumSumArr[i]);  // + 1 for the size of the subArr
     }
 
-    return cumSumArr;
+    return seconds;
 }
 
 // find the index, in the sorted array (ascending order), to insert the element preserving the order
@@ -552,7 +606,12 @@ __global__ void DivisionKernel(float* const dividend, const uint dividendDim, co
 
     dividend[idx] /= divisor;
 }
-static void ParallelDivisionGPU(float* const dividend, const uint dividendDim, const float divisor) {
+static float ParallelDivisionGPU(float* const dividend, const uint dividendDim, const float divisor) {
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float seconds = 0.0f;
+
     uint numBlocks = (dividendDim + BLOCKSIZE - 1) / BLOCKSIZE;
 
     long arrayBytes = dividendDim * sizeof(float);
@@ -561,10 +620,23 @@ static void ParallelDivisionGPU(float* const dividend, const uint dividendDim, c
     CHECK(cudaMalloc((void**)&d_dividend, arrayBytes));
     CHECK(cudaMemcpy(d_dividend, dividend, arrayBytes, cudaMemcpyHostToDevice));
 
+    cudaEventRecord(start);
+
     DivisionKernel << <numBlocks, BLOCKSIZE >> > (d_dividend, dividendDim, divisor);
 
-    CHECK(cudaDeviceSynchronize());
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    //CHECK(cudaDeviceSynchronize());
     CHECK(cudaGetLastError());
+
+    float iterMilliseconds = 0;
+    cudaEventElapsedTime(&iterMilliseconds, start, stop);
+    float iterSeconds = iterMilliseconds / 1000.0f;
+    seconds += iterSeconds;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
     // memcopy D2H
     CHECK(cudaMemcpy(dividend, d_dividend, arrayBytes, cudaMemcpyDeviceToHost));
@@ -572,6 +644,8 @@ static void ParallelDivisionGPU(float* const dividend, const uint dividendDim, c
     cudaFree(d_dividend);
 
     //CHECK(cudaDeviceReset());
+
+    return seconds;
 }
 
 
@@ -623,7 +697,7 @@ static float PredictGPU(Particles** particles, const Float2* const u, const Floa
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
-    
+
     ulong particlesBytes = sizeof(Particles);
 
     Particles* d_particlesIn;
@@ -640,7 +714,7 @@ static float PredictGPU(Particles** particles, const Float2* const u, const Floa
     cudaEventRecord(start);
 
     //__global__ void PredictGPUKernel(Particles * D_in, Particles * C_out, curandState * states, float* u, float* std, float dt) {
-    PredictGPUKernel <<<numBlocks, BLOCKSIZE >>> (d_particlesIn, devStates, (*u), (*std), dt);
+    PredictGPUKernel << <numBlocks, BLOCKSIZE >> > (d_particlesIn, devStates, (*u), (*std), dt);
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -726,7 +800,7 @@ __global__ void UpdateGPUKernel(Particles* const p, float* distanceX, float* dis
 
     distanceX[idx] -= landmark.x;
     distanceY[idx] -= landmark.y;
-  
+
     float distanceMagnitude = MagnitudeGPU(distanceX[idx], distanceY[idx]);
 
     float normPdf = normPdfGPU(z[idx], distanceMagnitude, R);
@@ -765,13 +839,13 @@ static float UpdateGPU(Particles** const p, const float const* z, const float R,
         Float2 landmark;
         landmark.x = landmarks->x[i];
         landmark.y = landmarks->y[i];
-        
+
         CHECK(cudaMemcpy(d_distanceX, (*p)->x, arrayBytes, cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_distanceY, (*p)->y, arrayBytes, cudaMemcpyHostToDevice));
 
         cudaEventRecord(start);
 
-        UpdateGPUKernel <<<numBlocks, BLOCKSIZE >>> (d_particles, d_distanceX, d_distanceY, d_z, R, landmark);
+        UpdateGPUKernel << <numBlocks, BLOCKSIZE >> > (d_particles, d_distanceX, d_distanceY, d_z, R, landmark);
 
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
@@ -796,28 +870,11 @@ static float UpdateGPU(Particles** const p, const float const* z, const float R,
     // Normalization
     float sum = FLT_EPSILON;  // avoid round - off to zero
 
-    cudaEventRecord(start);
+    //cudaEventRecord(start);
 
-    sum = SumArrayGPU((*p)->weights, N);
+    seconds += SumArrayGPU((*p)->weights, N, &sum);
 
-    cudaEventRecord(stop);
-    float iterMilliseconds = 0;
-    cudaEventElapsedTime(&iterMilliseconds, start, stop);
-    float iterSeconds = iterMilliseconds / 1000.0f;
-    seconds += iterSeconds;
-
-    cudaEventRecord(start);
-
-    ParallelDivisionGPU((*p)->weights, N, sum);
-
-    cudaEventRecord(stop);
-    iterMilliseconds = 0;
-    cudaEventElapsedTime(&iterMilliseconds, start, stop);
-    iterSeconds = iterMilliseconds / 1000.0f;
-    seconds += iterSeconds;
-
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
+    seconds += ParallelDivisionGPU((*p)->weights, N, sum);
 
     //CHECK(cudaDeviceReset());
 
@@ -854,9 +911,6 @@ static void EstimateCPU(const Particles* const p, Float2* const mean_out, Float2
     free(pos.y);
 }
 static float EstimateGPU(Particles** p, Float2* const mean_out, Float2* const var_out) {
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
     float seconds = 0.0f;
 
     Floats2 pos;
@@ -865,21 +919,9 @@ static float EstimateGPU(Particles** p, Float2* const mean_out, Float2* const va
     pos.y = (float*)malloc(N * sizeof(float));
     memcpy(pos.y, (*p)->y, N * sizeof(float));
 
-    cudaEventRecord(start);
+    seconds += WeightedAverageGPU(&pos, (*p)->weights, N, mean_out);
 
-    // mean = np.average(pos, weights = weights, axis = 0)
-    (*mean_out) = WeightedAverageGPU(&pos, (*p)->weights, N);
-
-    (*var_out) = WeightedAverageSqrdSubGPU(&pos, (*p)->weights, N, mean_out->x, mean_out->y);
-
-    cudaEventRecord(stop);
-    float iterMilliseconds = 0;
-    cudaEventElapsedTime(&iterMilliseconds, start, stop);
-    float iterSeconds = iterMilliseconds / 1000.0f;
-    seconds += iterSeconds;
-
-    cudaEventDestroy(start);    
-    cudaEventDestroy(stop);
+    seconds += WeightedAverageSqrdSubGPU(&pos, (*p)->weights, N, mean_out->x, mean_out->y, var_out);
 
     free(pos.x);
     free(pos.y);
@@ -905,7 +947,12 @@ static float Neff(const float* const weights, const int dim) {
     res = 1.0f / sum;
     return res;
 }
-static float NeffGPU(const float* const weightsIn, const int dim) {
+static float NeffGPU(const float* const weightsIn, const int dim, float* const neffOut) {
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float seconds = 0.0f;
+
     float res = 0.0f;
     float sum = FLT_EPSILON;
 
@@ -922,8 +969,22 @@ static float NeffGPU(const float* const weightsIn, const int dim) {
     CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
     weightsOut = (float*)malloc(blocksBytes * sizeof(float));
 
+    cudaEventRecord(start);
+
     SumSquaredParReduce << <numBlock, BLOCKSIZE >> > (d_weightsIn, d_weightsOut, dim);
-    CHECK(cudaDeviceSynchronize());
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float iterMilliseconds = 0;
+    cudaEventElapsedTime(&iterMilliseconds, start, stop);
+    float iterSeconds = iterMilliseconds / 1000.0f;
+    seconds += iterSeconds;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    //CHECK(cudaDeviceSynchronize());
     CHECK(cudaGetLastError());
 
     // memcopy D2H
@@ -941,8 +1002,9 @@ static float NeffGPU(const float* const weightsIn, const int dim) {
     free(weightsOut);
 
     //CHECK(cudaDeviceReset());
+    (*neffOut) = res;
 
-    return res;
+    return seconds;
 }
 
 //def simple_resample(particles, weights) :
@@ -991,15 +1053,9 @@ static float SimpleResampleGPU(Particles** const p) {
 
     int dim = N;
 
-    cudaEventRecord(start);
+    float* cumSum_arr = (float*)malloc(N * sizeof(float));
 
-    float* cumSum_arr = CumSumGPU((*p)->weights, dim);
-
-    cudaEventRecord(stop);
-    float iterMilliseconds = 0;
-    cudaEventElapsedTime(&iterMilliseconds, start, stop);
-    float iterSeconds = iterMilliseconds / 1000.0;
-    seconds += iterSeconds;
+    seconds += CumSumGPU((*p)->weights, dim, cumSum_arr);
 
     uint numBlocks = (dim + BLOCKSIZE - 1) / BLOCKSIZE;
 
@@ -1031,18 +1087,18 @@ static float SimpleResampleGPU(Particles** const p) {
 
     cudaEventRecord(start);
 
-    SimpleResampleGPUKernel<<<numBlocks , BLOCKSIZE>>>(d_particles, d_particlesOut, cumSum_arr, dim, devStates, d_indexFound, equalWeight);
-    
+    SimpleResampleGPUKernel << <numBlocks, BLOCKSIZE >> > (d_particles, d_particlesOut, cumSum_arr, dim, devStates, d_indexFound, equalWeight);
+
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
 
+    float iterMilliseconds = 0;
+    cudaEventElapsedTime(&iterMilliseconds, start, stop);
+    float iterSeconds = iterMilliseconds / 1000.0f;
+    seconds += iterSeconds;
+
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-
-    iterMilliseconds = 0;
-    cudaEventElapsedTime(&iterMilliseconds, start, stop);
-    iterSeconds = iterMilliseconds / 1000.0f;
-    seconds += iterSeconds;
 
     //CHECK(cudaDeviceSynchronize());
     CHECK(cudaMemcpy(indexFound, d_indexFound, N * sizeof(int), cudaMemcpyDeviceToHost));
@@ -1192,7 +1248,9 @@ void particleFilterGPU(Particles** p, const int iterations, const float sensorSt
 
         duration += UpdateGPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
 
-        float neff = NeffGPU((*p)->weights, N);
+        float neff;
+        duration += NeffGPU((*p)->weights, N, &neff);
+
         if (neff < N / 2.0f) {
             // resample
             duration += SimpleResampleGPU(p);
