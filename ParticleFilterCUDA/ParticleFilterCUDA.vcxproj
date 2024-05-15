@@ -92,6 +92,7 @@
   <ItemGroup>
     <ClInclude Include="common.h" />
     <ClInclude Include="Float2.h" />
+    <ClInclude Include="MyDefs.h" />
     <ClInclude Include="Particle.h" />
   </ItemGroup>
   <ItemGroup>
