@@ -109,32 +109,6 @@ __global__ void GenerateParticles(Particles* D_in, Particles* C_out, curandState
     C_out->heading[idx] = heading;
 }
 
-__global__ void PredictGPUKernel(Particles* const D_in, Particles* const C_out, curandState* const states, const Float2 u, const Float2 std, const float dt) {
-    uint tid = threadIdx.x;
-    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (idx >= D_in->size)
-        return;
-
-    curand_init(idx, 0, 0, &states[idx]);
-
-    //# update heading
-    float heading = D_in->heading[idx];
-    heading += u.x + (curand_normal(&states[idx]) * std.x);
-    heading = std::fmod(heading, 2 * PI);
-
-    //# move in the (noisy) commanded direction
-    float dist = (u.y * dt) + (curand_uniform(&states[idx]) * std.y);
-    float pos_x = D_in->x[idx];
-    float pos_y = D_in->y[idx];
-    pos_x += std::cos(heading) * dist;
-    pos_y += std::sin(heading) * dist;
-
-    C_out->x[idx] = pos_x;
-    C_out->y[idx] = pos_y;
-    C_out->heading[idx] = heading;
-}
-
 static float SumArrayGPU(const float* const arrIn, const int dim) {
     float sum = FLT_EPSILON;
 
@@ -166,7 +140,7 @@ static float SumArrayGPU(const float* const arrIn, const int dim) {
     cudaFree(d_arrIn);
     free(arrOut);
 
-    CHECK(cudaDeviceReset());
+    //CHECK(cudaDeviceReset());
 
     return sum;
 }
@@ -309,7 +283,7 @@ static float3 SumArrayWeightsGPU(const float* const posX, const float* const pos
     cudaFree(d_posYOut);
     free(posYOut);
 
-    CHECK(cudaDeviceReset());
+    //CHECK(cudaDeviceReset());
 
     float3 sums;
     sums.x = sumX;
@@ -377,7 +351,7 @@ static float3 SumArrayWeightsSqrdSubGPU(const float* const posX, const float* co
     cudaFree(d_posYOut);
     free(posYOut);
 
-    CHECK(cudaDeviceReset());
+    //CHECK(cudaDeviceReset());
 
     float3 sums;
     sums.x = sumX;
@@ -411,8 +385,8 @@ float sqrdMagnitude(const float* const X, const int dim) {
     return sqrdMag;
 }
 static float magnitudeXY(const Particles* const p) {
-    float sqrdMagX = sqrdMagnitude(p->x, p->size);
-    float sqrdMagY = sqrdMagnitude(p->y, p->size);
+    float sqrdMagX = sqrdMagnitude(p->x, N);
+    float sqrdMagY = sqrdMagnitude(p->y, N);
     float magnitude = sqrt(sqrdMagX + sqrdMagY);
     return magnitude;
 }
@@ -597,7 +571,7 @@ static void ParallelDivisionGPU(float* const dividend, const uint dividendDim, c
 
     cudaFree(d_dividend);
 
-    CHECK(cudaDeviceReset());
+    //CHECK(cudaDeviceReset());
 }
 
 
@@ -606,7 +580,7 @@ static void PredictCPU(Particles* const p, const Float2* const u, const Float2* 
     //    with noise Q(std heading change, std velocity)`"""
     srand((unsigned int)time(NULL));   // Initialization, should only be called once.
 
-    for (int i = 0; i < p->size; i++) {
+    for (int i = 0; i < N; i++) {
         float r = ((float)rand() / (float)(RAND_MAX));      // rand Returns a pseudo-random integer between 0 and RAND_MAX.
 
         // update heading
@@ -620,30 +594,73 @@ static void PredictCPU(Particles* const p, const Float2* const u, const Float2* 
         p->y[i] += sin(p->heading[i]) * dist;
     }
 }
-static void PredictGPU(Particles* const p, const Float2* const u, const Float2* const std, const float dt) {
-    long particlesBytes = BytesOfParticles(p);
+__global__ void PredictGPUKernel(Particles* const D_in, curandState* const states, const Float2 u, const Float2 std, const float dt) {
+    uint tid = threadIdx.x;
+    ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx >= N)
+        return;
+
+    curand_init(idx, 0, 0, &states[idx]);
+
+    //# update heading
+    float heading = D_in->heading[idx];
+    heading += u.x + (curand_normal(&states[idx]) * std.x);
+    heading = std::fmod(heading, 2 * PI);
+
+    //# move in the (noisy) commanded direction
+    float dist = (u.y * dt) + (curand_uniform(&states[idx]) * std.y);
+    float pos_x = D_in->x[idx];
+    float pos_y = D_in->y[idx];
+    pos_x += std::cos(heading) * dist;
+    pos_y += std::sin(heading) * dist;
+
+    D_in->x[idx] = pos_x;
+    D_in->y[idx] = pos_y;
+    D_in->heading[idx] = heading;
+}
+static float PredictGPU(Particles** particles, const Float2* const u, const Float2* const std, const float dt) {
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    
+    ulong particlesBytes = sizeof(Particles);
 
     Particles* d_particlesIn;
     CHECK(cudaMalloc((void**)&d_particlesIn, particlesBytes));
-    CHECK(cudaMemcpy(d_particlesIn, p, particlesBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_particlesIn, *particles, particlesBytes, cudaMemcpyHostToDevice));
+    //CHECK(cudaMemcpy(d_particlesIn, pp, particlesBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaGetLastError());
 
-    Particles* d_particlesOut;
-    CHECK(cudaMalloc((void**)&d_particlesOut, particlesBytes));
-    CHECK(cudaMemcpy(d_particlesOut, p, particlesBytes, cudaMemcpyHostToDevice));
-
-    uint numBlocks = (p->size + BLOCKSIZE - 1) / BLOCKSIZE;
+    uint numBlocks = (N + BLOCKSIZE - 1) / BLOCKSIZE;
     curandState* devStates;
+    cudaMalloc((void**)&devStates, N * sizeof(curandState));
+    CHECK(cudaGetLastError());
+
+    cudaEventRecord(start);
 
     //__global__ void PredictGPUKernel(Particles * D_in, Particles * C_out, curandState * states, float* u, float* std, float dt) {
-    PredictGPUKernel << <numBlocks, BLOCKSIZE >> > (d_particlesIn, d_particlesOut, devStates, (*u), (*std), dt);
+    PredictGPUKernel <<<numBlocks, BLOCKSIZE >>> (d_particlesIn, devStates, (*u), (*std), dt);
 
-    CHECK(cudaDeviceSynchronize());
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
 
-    CHECK(cudaMemcpy(p, d_particlesOut, particlesBytes, cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(*particles, d_particlesIn, particlesBytes, cudaMemcpyDeviceToHost));
     CHECK(cudaGetLastError());
 
     CHECK(cudaFree(d_particlesIn));
-    CHECK(cudaFree(d_particlesOut));
+    CHECK(cudaFree(devStates));
+
+    float milliseconds = 0.0f;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    float sec = milliseconds / 1000.0f;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    //CHECK(cudaDeviceReset());
+
+    return sec;
 }
 
 //def update(particles, weights, z, R, landmarks) :
@@ -654,7 +671,7 @@ static void PredictGPU(Particles* const p, const Float2* const u, const Float2* 
 //  weights += 1.e-300      # avoid round - off to zero
 //  weights /= sum(weights) # normalize
 static void UpdateCPU(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks, const int numberOfLandmarks) {
-    int size = p->size;
+    int size = N;
 
     Floats2 distance;
     distance.x = (float*)malloc(size * sizeof(float));
@@ -704,69 +721,71 @@ __global__ void UpdateGPUKernel(Particles* const p, float* distanceX, float* dis
     ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     // boundary check
-    if (idx >= p->size)
+    if (idx >= N)
         return;
 
-    //for (int j = 0; j < size; j++) {    // particles[:, 0 : 2] - landmark
-    //    distance.x[j] -= landmarks->x[i];
-    //    distance.y[j] -= landmarks->y[i];
-    //}
     distanceX[idx] -= landmark.x;
     distanceY[idx] -= landmark.y;
   
-    //for (int j = 0; j < size; j++) {    // np.linalg.norm
-    //    distanceMagnitudes[j] = Magnitude(distanceX[j], distanceY[j]);
-    //}
     float distanceMagnitude = MagnitudeGPU(distanceX[idx], distanceY[idx]);
 
-    //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
-    //for (int j = 0; j < size; j++) { // scipy.stats.norm(distance, R).pdf(z[i])
-    //    normPdfs[j] = normpdf(z[i], distanceMagnitudes[j], R);;
-    //}
     float normPdf = normPdfGPU(z[idx], distanceMagnitude, R);
 
-    //for (int j = 0; j < size; j++) { // weights *=  // element wise multiplication
-    //    p->weights[j] *= normPdfs[j];
-    //}
     p->weights[idx] *= normPdf;
 }
-static void UpdateGPU(Particles* const p, const float const* z, const float R, const Floats2 const* landmarks, const int numberOfLandmarks) {
-    int size = p->size;
+static float UpdateGPU(Particles** const p, const float const* z, const float R, const Floats2 const* landmarks, const int numberOfLandmarks) {
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float seconds = 0.0f;
 
-    long particlesBytes = BytesOfParticles(p);
+    ulong particlesBytes = sizeof(Particles);
 
     Particles* d_particles;
     CHECK(cudaMalloc((void**)&d_particles, particlesBytes));
-    CHECK(cudaMemcpy(d_particles, p, particlesBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_particles, *p, particlesBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaGetLastError());
 
-    ulong arrayBytes = p->size * sizeof(float);
-    long landmarkBytes = numberOfLandmarks * sizeof(float);
+    ulong arrayBytes = N * sizeof(float);
+    ulong landmarkBytes = numberOfLandmarks * sizeof(float);
 
     float* d_distanceX, * d_distanceY;
     CHECK(cudaMalloc((void**)&d_distanceX, arrayBytes));
     CHECK(cudaMalloc((void**)&d_distanceY, arrayBytes));
+    CHECK(cudaGetLastError());
 
     float* d_z;
-    CHECK(cudaMalloc((void**)&d_z, arrayBytes));
+    CHECK(cudaMalloc((void**)&d_z, landmarkBytes));
     CHECK(cudaMemcpy(d_z, z, landmarkBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaGetLastError());
 
-    uint numBlocks = (p->size + BLOCKSIZE - 1) / BLOCKSIZE;
+    uint numBlocks = (N + BLOCKSIZE - 1) / BLOCKSIZE;
 
     for (int i = 0; i < numberOfLandmarks; i++) {
         Float2 landmark;
         landmark.x = landmarks->x[i];
         landmark.y = landmarks->y[i];
         
-        CHECK(cudaMemcpy(d_distanceX, p->x, arrayBytes, cudaMemcpyHostToDevice));
-        CHECK(cudaMemcpy(d_distanceY, p->y, arrayBytes, cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_distanceX, (*p)->x, arrayBytes, cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_distanceY, (*p)->y, arrayBytes, cudaMemcpyHostToDevice));
 
-        UpdateGPUKernel << <numBlocks, BLOCKSIZE >> > (d_particles, d_distanceX, d_distanceY, d_z, R, landmark);
+        cudaEventRecord(start);
 
-        CHECK(cudaDeviceSynchronize());
+        UpdateGPUKernel <<<numBlocks, BLOCKSIZE >>> (d_particles, d_distanceX, d_distanceY, d_z, R, landmark);
+
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+
+        //CHECK(cudaDeviceSynchronize());
 
         // Update weights
-        CHECK(cudaMemcpy(p, d_particles, particlesBytes, cudaMemcpyDeviceToHost));
+        CHECK(cudaMemcpy(*p, d_particles, particlesBytes, cudaMemcpyDeviceToHost));
         CHECK(cudaGetLastError());
+
+        float iterMilliseconds = 0;
+        cudaEventElapsedTime(&iterMilliseconds, start, stop);
+        float iterSeconds = iterMilliseconds / 1000.0;
+        seconds += iterSeconds;
     }
 
     CHECK(cudaFree(d_particles));
@@ -776,10 +795,33 @@ static void UpdateGPU(Particles* const p, const float const* z, const float R, c
 
     // Normalization
     float sum = FLT_EPSILON;  // avoid round - off to zero
-    sum = SumArrayGPU(p->weights, p->size);
-    ParallelDivisionGPU(p->weights, p->size, sum);
 
-    CHECK(cudaDeviceReset());
+    cudaEventRecord(start);
+
+    sum = SumArrayGPU((*p)->weights, N);
+
+    cudaEventRecord(stop);
+    float iterMilliseconds = 0;
+    cudaEventElapsedTime(&iterMilliseconds, start, stop);
+    float iterSeconds = iterMilliseconds / 1000.0f;
+    seconds += iterSeconds;
+
+    cudaEventRecord(start);
+
+    ParallelDivisionGPU((*p)->weights, N, sum);
+
+    cudaEventRecord(stop);
+    iterMilliseconds = 0;
+    cudaEventElapsedTime(&iterMilliseconds, start, stop);
+    iterSeconds = iterMilliseconds / 1000.0f;
+    seconds += iterSeconds;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    //CHECK(cudaDeviceReset());
+
+    return seconds;
 }
 
 //def estimate(particles, weights) :
@@ -793,44 +835,56 @@ static void UpdateGPU(Particles* const p, const float const* z, const float R, c
 static void EstimateCPU(const Particles* const p, Float2* const mean_out, Float2* const var_out) {
 
     Floats2 pos;
-    pos.x = (float*)malloc(p->size * sizeof(float));
-    memcpy(pos.x, p->x, p->size * sizeof(float));
-    pos.y = (float*)malloc(p->size * sizeof(float));
-    memcpy(pos.y, p->y, p->size * sizeof(float));
+    pos.x = (float*)malloc(N * sizeof(float));
+    memcpy(pos.x, p->x, N * sizeof(float));
+    pos.y = (float*)malloc(N * sizeof(float));
+    memcpy(pos.y, p->y, N * sizeof(float));
 
     // mean = np.average(pos, weights = weights, axis = 0)
-    (*mean_out) = WeightedAverage(&pos, p->weights, p->size);
+    (*mean_out) = WeightedAverage(&pos, p->weights, N);
     // var = np.average((pos - mean) **2, weights = weights, axis = 0)
-    for (int i = 0; i < p->size; i++) {
+    for (int i = 0; i < N; i++) {
         pos.x[i] = (pos.x[i] - mean_out->x) * (pos.x[i] - mean_out->x);
         pos.y[i] = (pos.y[i] - mean_out->y) * (pos.y[i] - mean_out->y);
     }
 
-    (*var_out) = WeightedAverage(&pos, p->weights, p->size);
+    (*var_out) = WeightedAverage(&pos, p->weights, N);
 
     free(pos.x);
     free(pos.y);
 }
-static void EstimateGPU(const Particles* const p, Float2* const mean_out, Float2* const var_out) {
+static float EstimateGPU(Particles** p, Float2* const mean_out, Float2* const var_out) {
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float seconds = 0.0f;
 
     Floats2 pos;
-    pos.x = (float*)malloc(p->size * sizeof(float));
-    memcpy(pos.x, p->x, p->size * sizeof(float));
-    pos.y = (float*)malloc(p->size * sizeof(float));
-    memcpy(pos.y, p->y, p->size * sizeof(float));
+    pos.x = (float*)malloc(N * sizeof(float));
+    memcpy(pos.x, (*p)->x, N * sizeof(float));
+    pos.y = (float*)malloc(N * sizeof(float));
+    memcpy(pos.y, (*p)->y, N * sizeof(float));
+
+    cudaEventRecord(start);
 
     // mean = np.average(pos, weights = weights, axis = 0)
-    (*mean_out) = WeightedAverageGPU(&pos, p->weights, p->size);
+    (*mean_out) = WeightedAverageGPU(&pos, (*p)->weights, N);
 
-    // var = np.average((pos - mean) **2, weights = weights, axis = 0)
-    //for (int i = 0; i < p->size; i++) {
-    //    pos.x[i] = (pos.x[i] - mean_out->x) * (pos.x[i] - mean_out->x);
-    //    pos.y[i] = (pos.y[i] - mean_out->y) * (pos.y[i] - mean_out->y);
-    //}
-    (*var_out) = WeightedAverageSqrdSubGPU(&pos, p->weights, p->size, mean_out->x, mean_out->y);
+    (*var_out) = WeightedAverageSqrdSubGPU(&pos, (*p)->weights, N, mean_out->x, mean_out->y);
+
+    cudaEventRecord(stop);
+    float iterMilliseconds = 0;
+    cudaEventElapsedTime(&iterMilliseconds, start, stop);
+    float iterSeconds = iterMilliseconds / 1000.0f;
+    seconds += iterSeconds;
+
+    cudaEventDestroy(start);    
+    cudaEventDestroy(stop);
 
     free(pos.x);
     free(pos.y);
+
+    return seconds;
 }
 
 // We don't resample at every epoch. 
@@ -886,7 +940,7 @@ static float NeffGPU(const float* const weightsIn, const int dim) {
     cudaFree(d_weightsIn);
     free(weightsOut);
 
-    CHECK(cudaDeviceReset());
+    //CHECK(cudaDeviceReset());
 
     return res;
 }
@@ -901,7 +955,7 @@ static float NeffGPU(const float* const weightsIn, const int dim) {
 //    particles[:] = particles[indexes]
 //    weights.fill(1.0 / N)
 static void SimpleResample(Particles* const p) {
-    int dim = p->size;
+    int dim = N;
 
     //    cumulative_sum = np.cumsum(weights)
     float* cumSum_arr = CumSum(p->weights, dim);
@@ -929,44 +983,69 @@ static void SimpleResample(Particles* const p) {
     free(indexes);
     free(cumSum_arr);
 }
-static void SimpleResampleGPU(Particles* const p) {
-    int dim = p->size;
+static float SimpleResampleGPU(Particles** const p) {
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float seconds = 0.0f;
 
-    //    cumulative_sum = np.cumsum(weights)
-    float* cumSum_arr = CumSumGPU(p->weights, dim);
+    int dim = N;
+
+    cudaEventRecord(start);
+
+    float* cumSum_arr = CumSumGPU((*p)->weights, dim);
+
+    cudaEventRecord(stop);
+    float iterMilliseconds = 0;
+    cudaEventElapsedTime(&iterMilliseconds, start, stop);
+    float iterSeconds = iterMilliseconds / 1000.0;
+    seconds += iterSeconds;
 
     uint numBlocks = (dim + BLOCKSIZE - 1) / BLOCKSIZE;
 
-    ulong arrayBytes = dim * sizeof(float);
-
     curandState* devStates;
+    cudaMalloc((void**)&devStates, N * sizeof(curandState));
+
     // SearchSortedGPU
     // Starts with indexFound = dim -1
     // So search sorted will not branch that much
-    int* indexFound = (int*)malloc(arrayBytes);
-    memset(indexFound, dim - 1, arrayBytes);
+    int* indexFound = (int*)malloc(N * sizeof(int));
+    memset(indexFound, dim - 1, N * sizeof(int));
 
     float equalWeight = 1.0f / dim;
 
     float* d_cumSum_arr;
-    CHECK(cudaMalloc((void**)&d_cumSum_arr, arrayBytes));
-    CHECK(cudaMemcpy(d_cumSum_arr, cumSum_arr, arrayBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_cumSum_arr, N * sizeof(float)));
+    CHECK(cudaMemcpy(d_cumSum_arr, cumSum_arr, N * sizeof(float), cudaMemcpyHostToDevice));
 
     int* d_indexFound;
-    CHECK(cudaMalloc((void**)&d_indexFound, p->size * sizeof(int)));
-    CHECK(cudaMemset((void*)d_indexFound, dim - 1, p->size * sizeof(int)));
+    CHECK(cudaMalloc((void**)&d_indexFound, N * sizeof(int)));
+    CHECK(cudaMemset((void*)d_indexFound, dim - 1, N * sizeof(int)));
 
     Particles* d_particles, * d_particlesOut;
-    ulong particlesBytes = BytesOfParticles(p);
+    ulong particlesBytes = sizeof(Particles);
     CHECK(cudaMalloc((void**)&d_particles, particlesBytes));
     CHECK(cudaMemcpy(d_particles, p, particlesBytes, cudaMemcpyHostToDevice));
     CHECK(cudaMalloc((void**)&d_particlesOut, particlesBytes));
     // it does not need to be initialized since we will overwrite the value of every element
 
-    SimpleResampleGPUKernel<<<numBlocks , BLOCKSIZE>>>(d_particles, d_particlesOut, cumSum_arr, dim, devStates, d_indexFound, equalWeight);
+    cudaEventRecord(start);
 
-    CHECK(cudaDeviceSynchronize());
-    CHECK(cudaMemcpy(indexFound, d_indexFound, arrayBytes, cudaMemcpyDeviceToHost));
+    SimpleResampleGPUKernel<<<numBlocks , BLOCKSIZE>>>(d_particles, d_particlesOut, cumSum_arr, dim, devStates, d_indexFound, equalWeight);
+    
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    iterMilliseconds = 0;
+    cudaEventElapsedTime(&iterMilliseconds, start, stop);
+    iterSeconds = iterMilliseconds / 1000.0f;
+    seconds += iterSeconds;
+
+    //CHECK(cudaDeviceSynchronize());
+    CHECK(cudaMemcpy(indexFound, d_indexFound, N * sizeof(int), cudaMemcpyDeviceToHost));
     CHECK(cudaGetLastError());
 
     cudaFree(d_cumSum_arr);
@@ -974,7 +1053,9 @@ static void SimpleResampleGPU(Particles* const p) {
     cudaFree(d_particles);
     cudaFree(d_particlesOut);
 
-    CHECK(cudaDeviceReset());
+    //CHECK(cudaDeviceReset());
+
+    return seconds;
 }
 
 /*
@@ -1037,19 +1118,29 @@ __global__ void Norm_BlockUnroll8(float* in, float* out, const float add, const 
 }
 
 
-void particleFilterGPU(Particles* const p, const int iterations, const float sensorStdError) {
-    clock_t start, stop;
+void particleFilterGPU(Particles** p, const int iterations, const float sensorStdError) {
+    clock_t startClock, stopClock;
     double timer;
+    startClock = clock();
+
+    int dev = 0;
+    cudaDeviceProp deviceProp;
+    CHECK(cudaGetDeviceProperties(&deviceProp, dev));
+    printf("device %d: %s \n", dev, deviceProp.name);
+    CHECK(cudaSetDevice(dev));
+
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, 0);
+    printf("%d", prop.major * 10 + prop.minor);
 
     printf(" - particleFilter GPU - \n");
 
-    unsigned int dim = p->size;
+    unsigned int dim = N;
 
     printf("number of particles: %d \n", dim);
 
-    start = clock();
-
     // Start
+    float duration = 0.0f;
 
     Float2 u;
     Float2 std;
@@ -1097,20 +1188,20 @@ void particleFilterGPU(Particles* const p, const int iterations, const float sen
             zs[j] = magnitudeDistance + (r * sensorStdError);
         }
 
-        PredictGPU(p, &u, &std, dt);
+        duration += PredictGPU(p, &u, &std, dt);
 
-        UpdateGPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
+        duration += UpdateGPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
 
-        float neff = NeffGPU(p->weights, p->size);
-        if (neff < p->size / 2.0f) {
+        float neff = NeffGPU((*p)->weights, N);
+        if (neff < N / 2.0f) {
             // resample
-            SimpleResampleGPU(p);
+            duration += SimpleResampleGPU(p);
         }
 
         Float2 var;
         Float2 mean;
 
-        EstimateGPU(p, &mean, &var);
+        duration += EstimateGPU(p, &mean, &var);
 
         xs[i] = mean;
 
@@ -1118,15 +1209,17 @@ void particleFilterGPU(Particles* const p, const int iterations, const float sen
     }
 
     // End
+    printf("\n\n Total execution EVENT time: %9.4f sec \n\n", duration);
 
-    stop = clock();
-    timer = ((double)(stop - start)) / (double)CLOCKS_PER_SEC;
+    stopClock = clock();
+    timer = ((double)(stopClock - startClock)) / (double)CLOCKS_PER_SEC;
     printf("\n\n Total execution time: %9.4f sec \n\n", timer);
 
     free(landmarks.x);
     free(landmarks.y);
     free(xs);
 
+    CHECK(cudaDeviceReset());
 }
 
 void particleFilterCPU(Particles* const p, const int iterations, const float sensorStdError) {
@@ -1135,7 +1228,7 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
 
     printf(" - particleFilterC - \n");
 
-    unsigned int dim = p->size;
+    unsigned int dim = N;
 
     printf("number of particles: %d \n", dim);
 
@@ -1193,8 +1286,8 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
 
         UpdateCPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
 
-        float neff = Neff(p->weights, p->size);
-        if (neff < p->size / 2.0f) {
+        float neff = Neff((p)->weights, N);
+        if (neff < N / 2.0f) {
             // resample
             SimpleResample(p);
         }
@@ -1220,64 +1313,11 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
     free(xs);
 }
 
-void euclideanNorm(Particles* p, float2* norm, float2* landmark) {
-
-    Particles d_p;
-
-    CHECK(cudaMalloc((void**)&d_p.x, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_p.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_p.y, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_p.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_p.weights, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_p.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_p.heading, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_p.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice));
-
-
-    // OUTPUT for Device
-    Particles d_out;
-    CHECK(cudaMalloc((void**)&d_out.x, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_out.x, p->x, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_out.y, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_out.y, p->y, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_out.weights, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_out.weights, p->weights, DIM * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_out.heading, DIM * sizeof(float)));
-    CHECK(cudaMemcpy(d_out.heading, p->heading, DIM * sizeof(float), cudaMemcpyHostToDevice));
-
-
-    Particles p_norm;
-
-    Create_Particles(&p_norm, DIM);
-
-    Norm_BlockUnroll8 << <NUMBLOCKS / 8, BLOCKSIZE >> > (d_p.x, d_out.x, -landmark->x, N);  // ERRROR at <<< can be simply ignored
-    Norm_BlockUnroll8 << <NUMBLOCKS / 8, BLOCKSIZE >> > (d_p.y, d_out.y, -landmark->y, N);
-
-    CHECK(cudaDeviceSynchronize());
-    CHECK(cudaGetLastError());
-
-    CHECK(cudaMemcpy(p_norm.x, d_out.x, DIM * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(p_norm.y, d_out.y, DIM * sizeof(float), cudaMemcpyDeviceToHost));
-
-    // Sum on CPU the last elements
-    for (uint i = 0; i < NUMBLOCKS / 8; i++) {
-        norm->x += p_norm.x[i];
-        norm->y += p_norm.y[i];
-    }
-
-    cudaFree(d_p.x);
-    cudaFree(d_p.y);
-    cudaFree(d_p.heading);
-    cudaFree(d_p.weights);
-    cudaFree(d_out.x);
-    cudaFree(d_out.y);
-    cudaFree(d_out.heading);
-    cudaFree(d_out.weights);
-    free(p_norm.x);
-    free(p_norm.y);
-    free(p_norm.heading);
-    free(p_norm.weights);
-}
+struct SoA {
+    uint8_t r[N];
+    uint8_t g[N];
+    uint8_t b[N];
+};
 
 int main()
 {
@@ -1293,16 +1333,17 @@ int main()
     headingRange.x = MinHeading;
     headingRange.y = MaxHeading;
 
-    Particles p;
+    Particles* p = nullptr;
 
-    CreateAndRandomInitialize_Particles(&p, DIM, &xRange, &yRange, &headingRange);
+    CreateAndRandomInitialize_Particles(&p, N, &xRange, &yRange, &headingRange);
 
-    //particleFilterCPU(&p, 18, 0.1f);
+    particleFilterCPU(p, 18, 0.1f);
+
     particleFilterGPU(&p, 18, 0.1f);
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    CHECK(cudaDeviceReset());
+    //CHECK(cudaDeviceReset());
 
     return 0;
 }

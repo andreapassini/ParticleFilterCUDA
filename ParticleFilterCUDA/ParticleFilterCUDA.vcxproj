@@ -56,7 +56,8 @@
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <AdditionalOptions>-arch=sm_70 %(AdditionalOptions)</AdditionalOptions>
-      <ExtensibleWholeProgramCompilation>true</ExtensibleWholeProgramCompilation>
+      <ExtensibleWholeProgramCompilation>false</ExtensibleWholeProgramCompilation>
+      <GenerateRelocatableDeviceCode>true</GenerateRelocatableDeviceCode>
     </CudaCompile>
     <CudaLink>
       <AdditionalOptions>-arch=sm_70 %(AdditionalOptions)</AdditionalOptions>
@@ -81,9 +82,11 @@
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <AdditionalOptions>-arch=sm_70 %(AdditionalOptions)</AdditionalOptions>
+      <GenerateRelocatableDeviceCode>true</GenerateRelocatableDeviceCode>
     </CudaCompile>
     <CudaLink>
       <AdditionalOptions>-arch=sm_70 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalDependencies>;cudadevrt.lib;cudadevrt.lib</AdditionalDependencies>
     </CudaLink>
   </ItemDefinitionGroup>
   <ItemGroup>

@@ -6,9 +6,10 @@
 #define IDX(i,j,n) (i*n+j)
 #define ABS(x,y) (x-y>=0?x-y:y-x)
 
-#define N 10'000
+#define N 400'000
 
-#define BLOCKSIZE 1024  // block dim 1D
+//#define BLOCKSIZE 1024  // block dim 1D
+#define BLOCKSIZE 512  // block dim 1D
 
 #define MinX 0.0f
 #define MaxX 1000.0f

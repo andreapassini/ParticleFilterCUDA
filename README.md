@@ -605,3 +605,19 @@ static float NeffGPU(const float* const weightsIn, const int dim) {
 
 # Comparison
 
+ - particleFilterC -
+number of particles: 400000
+
+
+ Total execution time:    5.2010 sec
+
+device 0: NVIDIA GeForce GTX 1070
+61 - particleFilter GPU -
+number of particles: 400000
+
+
+ Total execution EVENT time:    0.0612 sec
+
+
+
+ Total execution time:    0.9390 sec
