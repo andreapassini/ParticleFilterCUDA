@@ -24,12 +24,6 @@
 
 #include "MyDefs.h"
 
-__global__ void addKernel(int* c, const int* a, const int* b)
-{
-    int i = threadIdx.x;
-    c[i] = a[i] + b[i];
-}
-
 /*
  *  Block by block parallel implementation without divergence (interleaved schema)
  */
@@ -244,7 +238,7 @@ __global__ void SumArrayWeightsSqrdSubGPUKernel(float* weights, float* posX, flo
     }
 
 }
-static float SumArrayWeightsGPU(const float* const posX, const float* const posY, const float* const weights,
+static float SumArrayWeightsGPU(const float* const posX, const float* const posY, float** weights,
     const int dim, float3* const sumsOut) {
 
     cudaEvent_t start, stop;
@@ -263,7 +257,7 @@ static float SumArrayWeightsGPU(const float* const posX, const float* const posY
 
     float* d_weights, * d_weightsOut, * weightsOut;
     CHECK(cudaMalloc((void**)&d_weights, arrayBytes));
-    CHECK(cudaMemcpy(d_weights, weights, arrayBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_weights, *weights, arrayBytes, cudaMemcpyHostToDevice));
     CHECK(cudaMalloc((void**)&d_weightsOut, blocksBytes));
     CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
     weightsOut = (float*)malloc(blocksBytes);
@@ -428,7 +422,10 @@ static float normpdf(const float x, const float mu = 0.0f, const float sigma = 1
     //  y = exp(-u * u / 2) / (sqrt(2 * pi) * abs(sigma))
     //  return y
     float u = (x - mu) / abs(sigma);
-    float y = exp(-u * u / 2) / (sqrt(PI2) * abs(sigma));
+    printf("\n u: %f", u);
+    float u2 = u * u;
+    printf("\n exp(-(u * u) / 2.0f): %f", exp(-(u * u) / 2.0f));
+    float y = exp(-(u * u) / 2.0f) / (sqrt(PI2) * abs(sigma));
     return y;
 }
 __device__ float normPdfGPU(const float x, const float mu = 0.0f, const float sigma = 1.0f) {
@@ -484,7 +481,7 @@ static Float2 WeightedAverage(const Floats2* const pos, const float* const weigh
 
     return avg;
 }
-static float WeightedAverageGPU(const Floats2* const pos, const float* const weights, const int dim, Float2* const average) {
+static float WeightedAverageGPU(const Floats2* const pos, float* weights, const int dim, Float2* const average) {
     float seconds = 0.0f;
 
     float3 sums;
@@ -492,7 +489,7 @@ static float WeightedAverageGPU(const Floats2* const pos, const float* const wei
     sums.y = 0.0f;
     sums.z = 0.0f;
 
-    seconds += SumArrayWeightsGPU(pos->x, pos->y, weights, dim, &sums);
+    seconds += SumArrayWeightsGPU(pos->x, pos->y, &weights, dim, &sums);
 
     average->x = sums.x / sums.z;
     average->y = sums.y / sums.z;
@@ -769,6 +766,7 @@ static void UpdateCPU(Particles* const p, const float const* z, const float R, c
 
         //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
         for (int j = 0; j < size; j++) { // scipy.stats.norm(distance, R).pdf(z[i])
+            printf("z[%d]: %f", i, z[i]);
             normPdfs[j] = normpdf(z[i], distanceMagnitudes[j], R);;
         }
         for (int j = 0; j < size; j++) { // weights *=  // element wise multiplication
@@ -804,6 +802,8 @@ __global__ void UpdateGPUKernel(Particles* const p, float* distanceX, float* dis
     float distanceMagnitude = MagnitudeGPU(distanceX[idx], distanceY[idx]);
 
     float normPdf = normPdfGPU(z[idx], distanceMagnitude, R);
+    //printf("\nidx: %d, normPdf: %9.4f", idx, normPdf);
+    printf("\nidx: %d, normPdf: %f", idx, normPdf);
 
     p->weights[idx] *= normPdf;
 }
@@ -973,6 +973,7 @@ static float NeffGPU(const float* const weightsIn, const int dim, float* const n
 
     SumSquaredParReduce << <numBlock, BLOCKSIZE >> > (d_weightsIn, d_weightsOut, dim);
 
+    CHECK(cudaDeviceSynchronize());
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
 
@@ -1067,7 +1068,7 @@ static float SimpleResampleGPU(Particles** const p) {
     // Starts with indexFound = dim -1
     // So search sorted will not branch that much
     int* indexFound = (int*)malloc(N * sizeof(int));
-    memset(indexFound, dim - 1, N * sizeof(int));
+    //memset(indexFound, dim - 1, N * sizeof(int));
 
     float equalWeight = 1.0f / dim;
 
@@ -1092,6 +1093,7 @@ static float SimpleResampleGPU(Particles** const p) {
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
+    //cudaDeviceSynchronize();
 
     float iterMilliseconds = 0;
     cudaEventElapsedTime(&iterMilliseconds, start, stop);
@@ -1249,7 +1251,7 @@ void particleFilterGPU(Particles** p, const int iterations, const float sensorSt
 
         float tempTime = PredictGPU(p, &u, &std, dt);
         duration += tempTime;
-        printf("\n\t PredictGPU time: %9.4f sec", tempTime);\
+        printf("\n\t PredictGPU time: %9.4f sec", tempTime);
 
         tempTime = UpdateGPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
         duration += tempTime;
@@ -1258,7 +1260,7 @@ void particleFilterGPU(Particles** p, const int iterations, const float sensorSt
         float neff;
         tempTime = NeffGPU((*p)->weights, N, &neff);
         duration += tempTime;
-        printf("\n\t NeffGPU: %9.4f sec", tempTime);
+        printf("\n\t\t NeffGPU: %9.4f sec", tempTime);
 
         //if (neff < N / 2.0f) {
         if (1) { // Only to test Resample
@@ -1413,93 +1415,11 @@ int main()
 
     particleFilterCPU(p, 18, 0.1f);
 
-    particleFilterGPU(&p, 18, 0.1f);
+    //particleFilterGPU(&p, 18, 0.1f);
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    //CHECK(cudaDeviceReset());
+    CHECK(cudaDeviceReset());
 
     return 0;
 }
-
-
-//// Helper function for using CUDA to add vectors in parallel.
-//cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
-//{
-//    int *dev_a = 0;
-//    int *dev_b = 0;
-//    int *dev_c = 0;
-//    cudaError_t cudaStatus;
-//
-//    //// Choose which GPU to run on, change this on a multi-GPU system.
-//    cudaStatus = cudaSetDevice(0);
-//    if (cudaStatus != cudaSuccess) {
-//        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-//        goto Error;
-//    }
-//
-//    // Allocate GPU buffers for three vectors (two input, one output)    .
-//    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
-//    if (cudaStatus != cudaSuccess) {
-//        fprintf(stderr, "cudaMalloc failed!");
-//        goto Error;
-//    }
-//
-//    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(int));
-//    if (cudaStatus != cudaSuccess) {
-//        fprintf(stderr, "cudaMalloc failed!");
-//        goto Error;
-//    }
-//
-//    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
-//    if (cudaStatus != cudaSuccess) {
-//        fprintf(stderr, "cudaMalloc failed!");
-//        goto Error;
-//    }
-//
-//    // Copy input vectors from host memory to GPU buffers.
-//    cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
-//    if (cudaStatus != cudaSuccess) {
-//        fprintf(stderr, "cudaMemcpy failed!");
-//        goto Error;
-//    }
-//
-//    cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
-//    if (cudaStatus != cudaSuccess) {
-//        fprintf(stderr, "cudaMemcpy failed!");
-//        goto Error;
-//    }
-//
-//    // Launch a kernel on the GPU with one thread for each element.
-//    addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
-//
-//    // Check for any errors launching the kernel
-//    cudaStatus = cudaGetLastError();
-//    if (cudaStatus != cudaSuccess) {
-//        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-//        goto Error;
-//    }
-//    
-//    // cudaDeviceSynchronize waits for the kernel to finish, and returns
-//    // any errors encountered during the launch.
-//    cudaStatus = cudaDeviceSynchronize();
-//    if (cudaStatus != cudaSuccess) {
-//        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
-//        goto Error;
-//    }
-//
-//    // Copy output vector from GPU buffer to host memory.
-//    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
-//    if (cudaStatus != cudaSuccess) {
-//        fprintf(stderr, "cudaMemcpy failed!");
-//        goto Error;
-//    }
-//
-//Error:
-//    cudaFree(dev_c);
-//    cudaFree(dev_a);
-//    cudaFree(dev_b);
-//    
-//    return cudaStatus;
-//}
-
