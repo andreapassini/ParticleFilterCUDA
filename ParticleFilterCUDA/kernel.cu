@@ -194,6 +194,7 @@ __global__ void SumArrayWeightsGPUKernel(float* weights, float* posX, float* pos
 
     // write result for this block to global mem
     if (tid == 0) {
+        printf("Block id: %d", blockIdx.x);
         outPosX[blockIdx.x] = thisBlockPosX[0];
         outPosY[blockIdx.x] = thisBlockPosY[0];
         outWeights[blockIdx.x] = thisBlockWeights[0];
@@ -265,21 +266,21 @@ static float SumArrayWeightsGPU(const float* const posX, const float* const posY
     CHECK(cudaMemcpy(d_weights, weights, arrayBytes, cudaMemcpyHostToDevice));
     CHECK(cudaMalloc((void**)&d_weightsOut, blocksBytes));
     CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
-    weightsOut = (float*)malloc(blocksBytes * sizeof(float));
+    weightsOut = (float*)malloc(blocksBytes);
 
     float* d_posX, * d_posXOut, * posXOut;
     CHECK(cudaMalloc((void**)&d_posX, arrayBytes));
     CHECK(cudaMemcpy(d_posX, posX, arrayBytes, cudaMemcpyHostToDevice));
     CHECK(cudaMalloc((void**)&d_posXOut, blocksBytes));
     CHECK(cudaMemset((void*)d_posXOut, 0, blocksBytes));
-    posXOut = (float*)malloc(blocksBytes * sizeof(float));
+    posXOut = (float*)malloc(blocksBytes);
 
     float* d_posY, * d_posYOut, * posYOut;
     CHECK(cudaMalloc((void**)&d_posY, arrayBytes));
     CHECK(cudaMemcpy(d_posY, posY, arrayBytes, cudaMemcpyHostToDevice));
     CHECK(cudaMalloc((void**)&d_posYOut, blocksBytes));
     CHECK(cudaMemset((void*)d_posYOut, 0, blocksBytes));
-    posYOut = (float*)malloc(blocksBytes * sizeof(float));
+    posYOut = (float*)malloc(blocksBytes);
 
     cudaEventRecord(start);
 
@@ -288,16 +289,13 @@ static float SumArrayWeightsGPU(const float* const posX, const float* const posY
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
 
-    float iterMilliseconds = 0;
+    //CHECK(cudaDeviceSynchronize());
+    CHECK(cudaGetLastError());
+
+    float iterMilliseconds = 0.0f;
     cudaEventElapsedTime(&iterMilliseconds, start, stop);
     float iterSeconds = iterMilliseconds / 1000.0f;
     seconds += iterSeconds;
-
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-
-    //CHECK(cudaDeviceSynchronize());
-    CHECK(cudaGetLastError());
 
     // memcopy D2H
     CHECK(cudaMemcpy(weightsOut, d_weightsOut, blocksBytes, cudaMemcpyDeviceToHost));
@@ -322,6 +320,9 @@ static float SumArrayWeightsGPU(const float* const posX, const float* const posY
     cudaFree(d_posY);
     cudaFree(d_posYOut);
     free(posYOut);
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
     //CHECK(cudaDeviceReset());
 
@@ -484,7 +485,6 @@ static Float2 WeightedAverage(const Floats2* const pos, const float* const weigh
     return avg;
 }
 static float WeightedAverageGPU(const Floats2* const pos, const float* const weights, const int dim, Float2* const average) {
-    ulong arrayBytes = dim * sizeof(float);
     float seconds = 0.0f;
 
     float3 sums;
@@ -1056,6 +1056,7 @@ static float SimpleResampleGPU(Particles** const p) {
     float* cumSum_arr = (float*)malloc(N * sizeof(float));
 
     seconds += CumSumGPU((*p)->weights, dim, cumSum_arr);
+    printf("\n\t\t CumSumGPU: %9.4f sec", seconds);
 
     uint numBlocks = (dim + BLOCKSIZE - 1) / BLOCKSIZE;
 
@@ -1081,7 +1082,7 @@ static float SimpleResampleGPU(Particles** const p) {
     Particles* d_particles, * d_particlesOut;
     ulong particlesBytes = sizeof(Particles);
     CHECK(cudaMalloc((void**)&d_particles, particlesBytes));
-    CHECK(cudaMemcpy(d_particles, p, particlesBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_particles, *p, particlesBytes, cudaMemcpyHostToDevice));
     CHECK(cudaMalloc((void**)&d_particlesOut, particlesBytes));
     // it does not need to be initialized since we will overwrite the value of every element
 
@@ -1227,6 +1228,8 @@ void particleFilterGPU(Particles** p, const int iterations, const float sensorSt
     xs = (Float2*)malloc(iterations * sizeof(Float2));
 
     for (int i = 0; i < iterations; i++) {
+        printf("\n\n Iteration: %d", i);
+
         // Diagonal movement
         robotPosition.x += 1.0f;
         robotPosition.y += 1.0f;
@@ -1244,22 +1247,33 @@ void particleFilterGPU(Particles** p, const int iterations, const float sensorSt
             zs[j] = magnitudeDistance + (r * sensorStdError);
         }
 
-        duration += PredictGPU(p, &u, &std, dt);
+        float tempTime = PredictGPU(p, &u, &std, dt);
+        duration += tempTime;
+        printf("\n\t PredictGPU time: %9.4f sec", tempTime);\
 
-        duration += UpdateGPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
+        tempTime = UpdateGPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
+        duration += tempTime;
+        printf("\n\t UpdateGPU: %9.4f sec", tempTime);
 
         float neff;
-        duration += NeffGPU((*p)->weights, N, &neff);
+        tempTime = NeffGPU((*p)->weights, N, &neff);
+        duration += tempTime;
+        printf("\n\t NeffGPU: %9.4f sec", tempTime);
 
-        if (neff < N / 2.0f) {
+        //if (neff < N / 2.0f) {
+        if (1) { // Only to test Resample
             // resample
-            duration += SimpleResampleGPU(p);
+            tempTime = SimpleResampleGPU(p);
+            duration += tempTime;
+            printf("\n\t SimpleResampleGPU: %9.4f sec", tempTime);
         }
 
         Float2 var;
         Float2 mean;
 
-        duration += EstimateGPU(p, &mean, &var);
+        tempTime = EstimateGPU(p, &mean, &var);
+        duration += tempTime;
+        printf("\n\t EstimateGPU: %9.4f sec", tempTime);
 
         xs[i] = mean;
 
@@ -1345,7 +1359,9 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
         UpdateCPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
 
         float neff = Neff((p)->weights, N);
-        if (neff < N / 2.0f) {
+        //if (neff < N / 2.0f) {
+        if (1) { // Only to test Resample
+
             // resample
             SimpleResample(p);
         }
