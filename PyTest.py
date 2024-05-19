@@ -1,3 +1,4 @@
+import filterpy
 from filterpy.monte_carlo import systematic_resample
 
 import matplotlib.pyplot as plt
@@ -39,9 +40,18 @@ def predict(particles, u, std, dt=1.):
     particles[:, 0] += np.cos(particles[:, 2]) * dist
     particles[:, 1] += np.sin(particles[:, 2]) * dist
 
+import math
+def normPdf(x, mu=0, sigma=1):
+    u = float((x - mu) / abs(sigma))
+    y = math.exp(-u * u / 2) / (math.sqrt(2 * math.pi) * abs(sigma))
+    return y
+
+
 def update(particles, weights, z, R, landmarks):
     for i, landmark in enumerate(landmarks):
         distance = np.linalg.norm(particles[:, 0:2] - landmark, axis=1)
+        normPdfScipy = scipy.stats.norm(distance, R).pdf(z[i])
+        normPdfAdHoc = normPdf(distance, z[i], R)
         weights *= scipy.stats.norm(distance, R).pdf(z[i])
 
     weights += 1.e-300      # avoid round-off to zero

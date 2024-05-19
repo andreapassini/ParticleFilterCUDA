@@ -188,7 +188,6 @@ __global__ void SumArrayWeightsGPUKernel(float* weights, float* posX, float* pos
 
     // write result for this block to global mem
     if (tid == 0) {
-        printf("Block id: %d", blockIdx.x);
         outPosX[blockIdx.x] = thisBlockPosX[0];
         outPosY[blockIdx.x] = thisBlockPosY[0];
         outWeights[blockIdx.x] = thisBlockWeights[0];
@@ -238,7 +237,7 @@ __global__ void SumArrayWeightsSqrdSubGPUKernel(float* weights, float* posX, flo
     }
 
 }
-static float SumArrayWeightsGPU(const float* const posX, const float* const posY, float** weights,
+float SumArrayWeightsGPU(const float* const posX, const float* const posY, float* weights,
     const int dim, float3* const sumsOut) {
 
     cudaEvent_t start, stop;
@@ -256,11 +255,10 @@ static float SumArrayWeightsGPU(const float* const posX, const float* const posY
     long arrayBytes = dim * sizeof(float);
 
     float* d_weights, * d_weightsOut, * weightsOut;
-    CHECK(cudaMalloc((void**)&d_weights, arrayBytes));
-    CHECK(cudaMemcpy(d_weights, *weights, arrayBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMalloc((void**)&d_weightsOut, blocksBytes));
-    CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
-    weightsOut = (float*)malloc(blocksBytes);
+
+    // To be removed
+    float* a;
+    CHECK(cudaMalloc((void**)&a, sizeof(float)));
 
     float* d_posX, * d_posXOut, * posXOut;
     CHECK(cudaMalloc((void**)&d_posX, arrayBytes));
@@ -268,6 +266,12 @@ static float SumArrayWeightsGPU(const float* const posX, const float* const posY
     CHECK(cudaMalloc((void**)&d_posXOut, blocksBytes));
     CHECK(cudaMemset((void*)d_posXOut, 0, blocksBytes));
     posXOut = (float*)malloc(blocksBytes);
+
+    CHECK(cudaMalloc((void**)&d_weights, arrayBytes));
+    CHECK(cudaMemcpy(d_weights, weights, arrayBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMalloc((void**)&d_weightsOut, blocksBytes));
+    CHECK(cudaMemset((void*)d_weightsOut, 0, blocksBytes));
+    weightsOut = (float*)malloc(blocksBytes);
 
     float* d_posY, * d_posYOut, * posYOut;
     CHECK(cudaMalloc((void**)&d_posY, arrayBytes));
@@ -424,15 +428,13 @@ static float normpdf(const float x, const float mu = 0.0f, const float sigma = 1
     //  y = exp(-u * u / 2) / (sqrt(2 * pi) * abs(sigma))
     //  return y
     float u = (x - mu) / abs(sigma);
-    printf("\n u: %f", u);
-    printf("\n exp(-(u * u) / 2.0f): %f", exp(-(u * u) / 2.0f));
-    float num = exp(- (u * u) / 2.0f);
-    float y = num / (PISQRD * abs(sigma));
+    float num = exp(-(u * u) / 2.0f);
+    float y = num / (PI2SQRD * abs(sigma));
     return y;
 }
 __device__ float normPdfGPU(const float x, const float mu = 0.0f, const float sigma = 1.0f) {
     float u = (x - mu) / abs(sigma);
-    float y = exp(-u * u / 2) / (sqrt(PI2) * abs(sigma));
+    float y = exp(-(u * u) / 2.0f) / (PI2SQRD * abs(sigma));
     return y;
 }
 
@@ -491,7 +493,7 @@ static float WeightedAverageGPU(const Floats2* const pos, float* weights, const 
     sums.y = 0.0f;
     sums.z = 0.0f;
 
-    seconds += SumArrayWeightsGPU(pos->x, pos->y, &weights, dim, &sums);
+    seconds += SumArrayWeightsGPU(pos->x, pos->y, weights, dim, &sums);
 
     average->x = sums.x / sums.z;
     average->y = sums.y / sums.z;
@@ -519,10 +521,10 @@ static float WeightedAverageSqrdSubGPU(const Floats2* const pos, const float* co
 static float* CumSum(const float* const arr_in, const int dim) {
     float* cumSumArr = (float*)malloc(dim * sizeof(float));
 
-    for (int i = 0; i < dim; i++) {
-        for (int j = 0; j <= i; j++) {
-            cumSumArr[i] += arr_in[j];
-        }
+    cumSumArr[0] = arr_in[0];
+
+    for (int i = 1; i < dim; i++) {
+        cumSumArr[i] += cumSumArr[i - 1] + arr_in[i];
     }
 
     return cumSumArr;
@@ -563,8 +565,7 @@ __global__ void SearchSortedGPU(const float* const sortedArry, const int dim, co
 
 __global__ void SimpleResampleGPUKernel(
     const Particles* const particles, Particles* const particlesOut,
-    const float* const sortedArry, const int dim, curandState* states,
-    int* const indexOut, const float equalWeight) {
+    const float* const sortedArry, const int dim, curandState* states, const float equalWeight) {
     uint tid = threadIdx.x;
     ulong idx = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -574,24 +575,34 @@ __global__ void SimpleResampleGPUKernel(
     curand_init(idx, 0, 0, &states[idx]);
     float element = curand_uniform(&states[idx]);
 
-    dim3 grid(gridDim.x);
-    dim3 block(blockDim.x);
+    //dim3 grid(gridDim.x);
+    //dim3 block(blockDim.x);
 
+    // I would like to use dynamic parallelism
+    // but the sync device side with child is deprecated
     // SearchSortedGPU
     // Starts with indexFound = dim -1
     // So search sorted will not branch that much
-    SearchSortedGPU << <grid, block >> > (sortedArry, dim - 1, element, indexOut, idx);
+    //SearchSortedGPU << <grid, block >> > (sortedArry, dim - 1, element, indexOut, idx);
 
     // Wait for the child kernel to be finished
     //cudaDeviceSynchronize();  // deprecated, nice
+
+    int index = 0;
+
+    for (int i = 0; i < dim; i++) {
+        if (element <= sortedArry[idx] && element > sortedArry[idx + 1]) {
+            index = i;
+        }
+    }
 
     // When all the indexes are found
     __syncthreads();
 
     // resample according to indexes
-    particlesOut->x[idx] = particles->x[indexOut[idx]];
-    particlesOut->y[idx] = particles->y[indexOut[idx]];
-    particlesOut->heading[idx] = particles->heading[indexOut[idx]];
+    particlesOut->x[idx] = particles->x[index];
+    particlesOut->y[idx] = particles->y[index];
+    particlesOut->heading[idx] = particles->heading[index];
     particlesOut->weights[idx] = equalWeight;
 }
 
@@ -768,7 +779,6 @@ static void UpdateCPU(Particles* const p, const float const* z, const float R, c
 
         //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
         for (int j = 0; j < size; j++) { // scipy.stats.norm(distance, R).pdf(z[i])
-            printf("z[%d]: %f", i, z[i]);
             normPdfs[j] = normpdf(z[i], distanceMagnitudes[j], R);
         }
         for (int j = 0; j < size; j++) { // weights *=  // element wise multiplication
@@ -804,8 +814,7 @@ __global__ void UpdateGPUKernel(Particles* const p, float* distanceX, float* dis
     float distanceMagnitude = MagnitudeGPU(distanceX[idx], distanceY[idx]);
 
     float normPdf = normPdfGPU(z[idx], distanceMagnitude, R);
-    //printf("\nidx: %d, normPdf: %9.4f", idx, normPdf);
-    printf("\nidx: %d, normPdf: %f", idx, normPdf);
+    //printf("\nidx: %d, normPdf: %f", idx, normPdf);
 
     p->weights[idx] *= normPdf;
 }
@@ -1066,21 +1075,11 @@ static float SimpleResampleGPU(Particles** const p) {
     curandState* devStates;
     cudaMalloc((void**)&devStates, N * sizeof(curandState));
 
-    // SearchSortedGPU
-    // Starts with indexFound = dim -1
-    // So search sorted will not branch that much
-    int* indexFound = (int*)malloc(N * sizeof(int));
-    //memset(indexFound, dim - 1, N * sizeof(int));
-
     float equalWeight = 1.0f / dim;
 
     float* d_cumSum_arr;
     CHECK(cudaMalloc((void**)&d_cumSum_arr, N * sizeof(float)));
     CHECK(cudaMemcpy(d_cumSum_arr, cumSum_arr, N * sizeof(float), cudaMemcpyHostToDevice));
-
-    int* d_indexFound;
-    CHECK(cudaMalloc((void**)&d_indexFound, N * sizeof(int)));
-    CHECK(cudaMemset((void*)d_indexFound, dim - 1, N * sizeof(int)));
 
     Particles* d_particles, * d_particlesOut;
     ulong particlesBytes = sizeof(Particles);
@@ -1091,11 +1090,15 @@ static float SimpleResampleGPU(Particles** const p) {
 
     cudaEventRecord(start);
 
-    SimpleResampleGPUKernel << <numBlocks, BLOCKSIZE >> > (d_particles, d_particlesOut, cumSum_arr, dim, devStates, d_indexFound, equalWeight);
+    SimpleResampleGPUKernel << <numBlocks, BLOCKSIZE >> > (
+        d_particles, d_particlesOut,
+        d_cumSum_arr, dim,
+        devStates, equalWeight);
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     //cudaDeviceSynchronize();
+    CHECK(cudaGetLastError());
 
     float iterMilliseconds = 0;
     cudaEventElapsedTime(&iterMilliseconds, start, stop);
@@ -1105,12 +1108,10 @@ static float SimpleResampleGPU(Particles** const p) {
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 
-    //CHECK(cudaDeviceSynchronize());
-    CHECK(cudaMemcpy(indexFound, d_indexFound, N * sizeof(int), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(*p, d_particlesOut, sizeof(Particles), cudaMemcpyDeviceToHost));
     CHECK(cudaGetLastError());
 
     cudaFree(d_cumSum_arr);
-    cudaFree(d_indexFound);
     cudaFree(d_particles);
     cudaFree(d_particlesOut);
 
@@ -1212,7 +1213,7 @@ void particleFilterGPU(Particles** p, const int iterations, const float sensorSt
     landmarks.x = (float*)malloc(numberOfLandmarks * sizeof(float));
     landmarks.y = (float*)malloc(numberOfLandmarks * sizeof(float));
 
-    landmarks.x[0] = -1.0f;
+    landmarks.x[0] = 0.0f;
     landmarks.y[0] = 2.0f;
 
     landmarks.x[1] = 5.0f;
@@ -1265,8 +1266,8 @@ void particleFilterGPU(Particles** p, const int iterations, const float sensorSt
         printf("\n\t\t NeffGPU: %9.4f sec", tempTime);
 
         //if (neff < N / 2.0f) {
-        if (1) { // Only to test Resample
-            // resample
+        if (1) { // Only to test Re-sample
+            // re-sample
             tempTime = SimpleResampleGPU(p);
             duration += tempTime;
             printf("\n\t SimpleResampleGPU: %9.4f sec", tempTime);
@@ -1291,6 +1292,18 @@ void particleFilterGPU(Particles** p, const int iterations, const float sensorSt
     timer = ((double)(stopClock - startClock)) / (double)CLOCKS_PER_SEC;
     printf("\n\n Total execution time: %9.4f sec \n\n", timer);
 
+    // write to file the results
+    FILE* fptr;
+
+    // Open a file in append mode
+    fptr = fopen("C:\\Users\\andre\\ANDREA\\UNI\\GPU-COMPUTING\\ParticleFilterCUDA\\particleFilterGPU.txt", "a");
+
+    // Append some text to the file
+    fprintf(fptr, "Total execution EVENT time: %9.4f sec", duration);
+
+    // Close the file
+    fclose(fptr);
+
     free(landmarks.x);
     free(landmarks.y);
     free(xs);
@@ -1302,7 +1315,7 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
     clock_t start, stop;
     double timer;
 
-    printf(" - particleFilterC - \n");
+    printf(" - particleFilter CPU - \n");
 
     unsigned int dim = N;
 
@@ -1341,6 +1354,8 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
     xs = (Float2*)malloc(iterations * sizeof(Float2));
 
     for (int i = 0; i < iterations; i++) {
+        printf("Iteration: %d\n", i);
+
         // Diagonal movement
         robotPosition.x += 1.0f;
         robotPosition.y += 1.0f;
@@ -1359,8 +1374,10 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
         }
 
         PredictCPU(p, &u, &std, dt);
+        printf("\tPredictCPU\n");
 
         UpdateCPU(p, zs, sensorStdError, &landmarks, numberOfLandmarks);
+        printf("\tUpdateCPU\n");
 
         float neff = Neff((p)->weights, N);
         //if (neff < N / 2.0f) {
@@ -1368,12 +1385,14 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
 
             // resample
             SimpleResample(p);
+            printf("\tSimpleResample\n");
         }
 
         Float2 var;
         Float2 mean;
 
         EstimateCPU(p, &mean, &var);
+        printf("\tEstimateCPU\n");
 
         xs[i] = mean;
 
@@ -1384,7 +1403,19 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
 
     stop = clock();
     timer = ((double)(stop - start)) / (double)CLOCKS_PER_SEC;
-    printf("\n\n Total execution time: %9.4f sec \n\n", timer);
+    printf("\n\n Total CPU execution time: %9.4f sec \n\n", timer);
+
+    // write to file the results
+    FILE* fptr;
+
+    // Open a file in append mode
+    fptr = fopen("C:\\Users\\andre\\ANDREA\\UNI\\GPU-COMPUTING\\ParticleFilterCUDA\\particleFilterCPU.txt", "a");
+
+    // Append some text to the file
+    fprintf(fptr, "Total CPU execution time: %9.4f sec", timer);
+
+    // Close the file
+    fclose(fptr);
 
     free(landmarks.x);
     free(landmarks.y);
@@ -1410,9 +1441,9 @@ int main()
 
     CreateAndRandomInitialize_Particles(&p, N, &xRange, &yRange, &headingRange);
 
-    particleFilterCPU(p, 18, 0.1f);
+    //particleFilterCPU(p, ITERAIONS, 0.1f);
 
-    //particleFilterGPU(&p, 18, 0.1f);
+    particleFilterGPU(&p, ITERAIONS, 0.1f);
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.
