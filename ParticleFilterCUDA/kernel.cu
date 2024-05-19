@@ -415,7 +415,9 @@ static float SumArrayWeightsSqrdSubGPU(const float* const posX, const float* con
     return seconds;
 }
 
-
+// Norm Pdf
+// https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.norm.html
+// https://stackoverflow.com/questions/10847007/using-the-gaussian-probability-density-function-in-c
 //  def normpdf(x, mu=0, sigma=1):
 static float normpdf(const float x, const float mu = 0.0f, const float sigma = 1.0f) {
     //  u = float((x - mu) / abs(sigma))
@@ -423,9 +425,9 @@ static float normpdf(const float x, const float mu = 0.0f, const float sigma = 1
     //  return y
     float u = (x - mu) / abs(sigma);
     printf("\n u: %f", u);
-    float u2 = u * u;
     printf("\n exp(-(u * u) / 2.0f): %f", exp(-(u * u) / 2.0f));
-    float y = exp(-(u * u) / 2.0f) / (sqrt(PI2) * abs(sigma));
+    float num = exp(- (u * u) / 2.0f);
+    float y = num / (PISQRD * abs(sigma));
     return y;
 }
 __device__ float normPdfGPU(const float x, const float mu = 0.0f, const float sigma = 1.0f) {
@@ -767,7 +769,7 @@ static void UpdateCPU(Particles* const p, const float const* z, const float R, c
         //  weights *= scipy.stats.norm(distance, R).pdf(z[i])
         for (int j = 0; j < size; j++) { // scipy.stats.norm(distance, R).pdf(z[i])
             printf("z[%d]: %f", i, z[i]);
-            normPdfs[j] = normpdf(z[i], distanceMagnitudes[j], R);;
+            normPdfs[j] = normpdf(z[i], distanceMagnitudes[j], R);
         }
         for (int j = 0; j < size; j++) { // weights *=  // element wise multiplication
             p->weights[j] *= normPdfs[j];
@@ -1389,11 +1391,6 @@ void particleFilterCPU(Particles* const p, const int iterations, const float sen
     free(xs);
 }
 
-struct SoA {
-    uint8_t r[N];
-    uint8_t g[N];
-    uint8_t b[N];
-};
 
 int main()
 {
