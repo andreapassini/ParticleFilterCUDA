@@ -2,6 +2,11 @@
 
 https://github.com/mattdean1/cuda.git
 
+
+1142.2200 sec
+
+4.9750 sec
+
 ## Motivation
 
 We have moving objects that we want to track, like fighter jets, missiles or a car, the problem will have these characteristics:
