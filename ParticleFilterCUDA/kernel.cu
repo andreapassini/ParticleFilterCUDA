@@ -24,6 +24,13 @@
 
 #include "MyDefs.h"
 
+int THREADS_PER_BLOCK = BLOCKSIZE;
+int ELEMENTS_PER_BLOCK = THREADS_PER_BLOCK * 2;
+
+void scanLargeEvenDeviceArray(float* d_out, float* d_in, int length, bool bcao);
+void scanLargeDeviceArray(float* d_out, float* d_in, int length, bool bcao);
+void scanLargeEvenDeviceArray(float* d_out, float* d_in, int length, bool bcao);
+
 /*
  *  Block by block parallel implementation without divergence (interleaved schema)
  */
@@ -529,12 +536,368 @@ static float* CumSum(const float* const arr_in, const int dim) {
 
     return cumSumArr;
 }
-static float CumSumGPU(const float* const arr_in, const int dim, float* const cumSumArr) {
+
+/*///////////////////////////////////*/
+/*            kernels.cu             */
+/*///////////////////////////////////*/
+#define SHARED_MEMORY_BANKS 32
+#define LOG_MEM_BANKS 5
+
+// There were two BCAO optimisations in the paper - this one is fastest
+#define CONFLICT_FREE_OFFSET(n) ((n) >> LOG_MEM_BANKS)
+
+__global__ void prescan_arbitrary(float* output, float* input, int n, int powerOfTwo)
+{
+    extern __shared__ float temp[];// allocated on invocation
+    int threadID = threadIdx.x;
+
+    int ai = threadID;
+    int bi = threadID + (n / 2);
+    int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
+    int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
+
+
+    if (threadID < n) {
+        temp[ai + bankOffsetA] = input[ai];
+        temp[bi + bankOffsetB] = input[bi];
+    }
+    else {
+        temp[ai + bankOffsetA] = 0;
+        temp[bi + bankOffsetB] = 0;
+    }
+
+
+    int offset = 1;
+    for (int d = powerOfTwo >> 1; d > 0; d >>= 1) // build sum in place up the tree
+    {
+        __syncthreads();
+        if (threadID < d)
+        {
+            int ai = offset * (2 * threadID + 1) - 1;
+            int bi = offset * (2 * threadID + 2) - 1;
+            ai += CONFLICT_FREE_OFFSET(ai);
+            bi += CONFLICT_FREE_OFFSET(bi);
+
+            temp[bi] += temp[ai];
+        }
+        offset *= 2;
+    }
+
+    if (threadID == 0) {
+        temp[powerOfTwo - 1 + CONFLICT_FREE_OFFSET(powerOfTwo - 1)] = 0; // clear the last element
+    }
+
+    for (int d = 1; d < powerOfTwo; d *= 2) // traverse down tree & build scan
+    {
+        offset >>= 1;
+        __syncthreads();
+        if (threadID < d)
+        {
+            int ai = offset * (2 * threadID + 1) - 1;
+            int bi = offset * (2 * threadID + 2) - 1;
+            ai += CONFLICT_FREE_OFFSET(ai);
+            bi += CONFLICT_FREE_OFFSET(bi);
+
+            int t = temp[ai];
+            temp[ai] = temp[bi];
+            temp[bi] += t;
+        }
+    }
+    __syncthreads();
+
+    if (threadID < n) {
+        output[ai] = temp[ai + bankOffsetA];
+        output[bi] = temp[bi + bankOffsetB];
+    }
+}
+__global__ void prescan_arbitrary_unoptimized(float* output, float* input, int n, int powerOfTwo) {
+    extern __shared__ float temp[];// allocated on invocation
+    int threadID = threadIdx.x;
+
+    if (threadID < n) {
+        temp[2 * threadID] = input[2 * threadID]; // load input into shared memory
+        temp[2 * threadID + 1] = input[2 * threadID + 1];
+    }
+    else {
+        temp[2 * threadID] = 0;
+        temp[2 * threadID + 1] = 0;
+    }
+
+
+    int offset = 1;
+    for (int d = powerOfTwo >> 1; d > 0; d >>= 1) // build sum in place up the tree
+    {
+        __syncthreads();
+        if (threadID < d)
+        {
+            int ai = offset * (2 * threadID + 1) - 1;
+            int bi = offset * (2 * threadID + 2) - 1;
+            temp[bi] += temp[ai];
+        }
+        offset *= 2;
+    }
+
+    if (threadID == 0) { temp[powerOfTwo - 1] = 0; } // clear the last element
+
+    for (int d = 1; d < powerOfTwo; d *= 2) // traverse down tree & build scan
+    {
+        offset >>= 1;
+        __syncthreads();
+        if (threadID < d)
+        {
+            int ai = offset * (2 * threadID + 1) - 1;
+            int bi = offset * (2 * threadID + 2) - 1;
+            int t = temp[ai];
+            temp[ai] = temp[bi];
+            temp[bi] += t;
+        }
+    }
+    __syncthreads();
+
+    if (threadID < n) {
+        output[2 * threadID] = temp[2 * threadID]; // write results to device memory
+        output[2 * threadID + 1] = temp[2 * threadID + 1];
+    }
+}
+__global__ void prescan_large(float* output, float* input, int n, float* sums) {
+    extern __shared__ float temp[];
+
+    int blockID = blockIdx.x;
+    int threadID = threadIdx.x;
+    int blockOffset = blockID * n;
+
+    int ai = threadID;
+    int bi = threadID + (n / 2);
+    int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
+    int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
+    temp[ai + bankOffsetA] = input[blockOffset + ai];
+    temp[bi + bankOffsetB] = input[blockOffset + bi];
+
+    int offset = 1;
+    for (int d = n >> 1; d > 0; d >>= 1) // build sum in place up the tree
+    {
+        __syncthreads();
+        if (threadID < d)
+        {
+            int ai = offset * (2 * threadID + 1) - 1;
+            int bi = offset * (2 * threadID + 2) - 1;
+            ai += CONFLICT_FREE_OFFSET(ai);
+            bi += CONFLICT_FREE_OFFSET(bi);
+
+            temp[bi] += temp[ai];
+        }
+        offset *= 2;
+    }
+    __syncthreads();
+
+
+    if (threadID == 0) {
+        sums[blockID] = temp[n - 1 + CONFLICT_FREE_OFFSET(n - 1)];
+        temp[n - 1 + CONFLICT_FREE_OFFSET(n - 1)] = 0;
+    }
+
+    for (int d = 1; d < n; d *= 2) // traverse down tree & build scan
+    {
+        offset >>= 1;
+        __syncthreads();
+        if (threadID < d)
+        {
+            int ai = offset * (2 * threadID + 1) - 1;
+            int bi = offset * (2 * threadID + 2) - 1;
+            ai += CONFLICT_FREE_OFFSET(ai);
+            bi += CONFLICT_FREE_OFFSET(bi);
+
+            int t = temp[ai];
+            temp[ai] = temp[bi];
+            temp[bi] += t;
+        }
+    }
+    __syncthreads();
+
+    output[blockOffset + ai] = temp[ai + bankOffsetA];
+    output[blockOffset + bi] = temp[bi + bankOffsetB];
+}
+__global__ void prescan_large_unoptimized(float* output, float* input, int n, float* sums) {
+    int blockID = blockIdx.x;
+    int threadID = threadIdx.x;
+    int blockOffset = blockID * n;
+
+    extern __shared__ float temp[];
+    temp[2 * threadID] = input[blockOffset + (2 * threadID)];
+    temp[2 * threadID + 1] = input[blockOffset + (2 * threadID) + 1];
+
+    int offset = 1;
+    for (int d = n >> 1; d > 0; d >>= 1) // build sum in place up the tree
+    {
+        __syncthreads();
+        if (threadID < d)
+        {
+            int ai = offset * (2 * threadID + 1) - 1;
+            int bi = offset * (2 * threadID + 2) - 1;
+            temp[bi] += temp[ai];
+        }
+        offset *= 2;
+    }
+    __syncthreads();
+
+
+    if (threadID == 0) {
+        sums[blockID] = temp[n - 1];
+        temp[n - 1] = 0;
+    }
+
+    for (int d = 1; d < n; d *= 2) // traverse down tree & build scan
+    {
+        offset >>= 1;
+        __syncthreads();
+        if (threadID < d)
+        {
+            int ai = offset * (2 * threadID + 1) - 1;
+            int bi = offset * (2 * threadID + 2) - 1;
+            int t = temp[ai];
+            temp[ai] = temp[bi];
+            temp[bi] += t;
+        }
+    }
+    __syncthreads();
+
+    output[blockOffset + (2 * threadID)] = temp[2 * threadID];
+    output[blockOffset + (2 * threadID) + 1] = temp[2 * threadID + 1];
+}
+__global__ void add(float* output, int length, float* n) {
+    int blockID = blockIdx.x;
+    int threadID = threadIdx.x;
+    int blockOffset = blockID * length;
+
+    output[blockOffset + threadID] += n[blockID];
+}
+__global__ void add(float* output, int length, float* n1, float* n2) {
+    int blockID = blockIdx.x;
+    int threadID = threadIdx.x;
+    int blockOffset = blockID * length;
+
+    output[blockOffset + threadID] += n1[blockID] + n2[blockID];
+}
+bool isPowerOfTwo(int x) {
+    return x && !(x & (x - 1));
+}
+int nextPowerOfTwo(int x) {
+    int power = 1;
+    while (power < x) {
+        power *= 2;
+    }
+    return power;
+}
+
+void scanSmallDeviceArray(float* d_out, float* d_in, int length, bool bcao) {
+    int powerOfTwo = nextPowerOfTwo(length);
+
+    if (bcao) {
+        prescan_arbitrary << <1, (length + 1) / 2, 2 * powerOfTwo * sizeof(float) >> > (d_out, d_in, length, powerOfTwo);
+    }
+    else {
+        prescan_arbitrary_unoptimized << <1, (length + 1) / 2, 2 * powerOfTwo * sizeof(float) >> > (d_out, d_in, length, powerOfTwo);
+    }
+}
+void scanLargeDeviceArray(float* d_out, float* d_in, int length, bool bcao) {
+    int remainder = length % (ELEMENTS_PER_BLOCK);
+    if (remainder == 0) {
+        scanLargeEvenDeviceArray(d_out, d_in, length, bcao);
+    }
+    else {
+        // perform a large scan on a compatible multiple of elements
+        int lengthMultiple = length - remainder;
+        scanLargeEvenDeviceArray(d_out, d_in, lengthMultiple, bcao);
+
+        // scan the remaining elements and add the (inclusive) last element of the large scan to this
+        float* startOfOutputArray = &(d_out[lengthMultiple]);
+        scanSmallDeviceArray(startOfOutputArray, &(d_in[lengthMultiple]), remainder, bcao);
+
+        add << <1, remainder >> > (startOfOutputArray, remainder, &(d_in[lengthMultiple - 1]), &(d_out[lengthMultiple - 1]));
+    }
+}
+void scanLargeEvenDeviceArray(float* d_out, float* d_in, int length, bool bcao) {
+    const int blocks = length / ELEMENTS_PER_BLOCK;
+    const int sharedMemArraySize = ELEMENTS_PER_BLOCK * sizeof(float);
+
+    float* d_sums, * d_incr;
+    cudaMalloc((void**)&d_sums, blocks * sizeof(float));
+    cudaMalloc((void**)&d_incr, blocks * sizeof(float));
+
+    if (bcao) {
+        prescan_large << <blocks, THREADS_PER_BLOCK, 2 * sharedMemArraySize >> > (d_out, d_in, ELEMENTS_PER_BLOCK, d_sums);
+    }
+    else {
+        prescan_large_unoptimized << <blocks, THREADS_PER_BLOCK, 2 * sharedMemArraySize >> > (d_out, d_in, ELEMENTS_PER_BLOCK, d_sums);
+    }
+
+    const int sumsArrThreadsNeeded = (blocks + 1) / 2;
+    if (sumsArrThreadsNeeded > THREADS_PER_BLOCK) {
+        // perform a large scan on the sums arr
+        scanLargeDeviceArray(d_incr, d_sums, blocks, bcao);
+    }
+    else {
+        // only need one block to scan sums arr so can use small scan
+        scanSmallDeviceArray(d_incr, d_sums, blocks, bcao);
+    }
+
+    add << <blocks, ELEMENTS_PER_BLOCK >> > (d_out, ELEMENTS_PER_BLOCK, d_incr);
+
+    cudaFree(d_sums);
+    cudaFree(d_incr);
+}
+float scan(float* output, float* input, int length, bool bcao) {
+    float* d_out, * d_in;
+    const int arraySize = length * sizeof(float);
+
+    cudaMalloc((void**)&d_out, arraySize);
+    cudaMalloc((void**)&d_in, arraySize);
+    cudaMemcpy(d_out, output, arraySize, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_in, input, arraySize, cudaMemcpyHostToDevice);
+
+    // start timer
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
+
+    if (length > ELEMENTS_PER_BLOCK) {
+        scanLargeDeviceArray(d_out, d_in, length, bcao);
+    }
+    else {
+        scanSmallDeviceArray(d_out, d_in, length, bcao);
+    }
+
+    // end timer
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float elapsedTime = 0;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+
+    cudaMemcpy(output, d_out, arraySize, cudaMemcpyDeviceToHost);
+
+    cudaFree(d_out);
+    cudaFree(d_in);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    return elapsedTime;
+}
+//static float CumSumGPU(const float* const arr_in, const int dim, float* const cumSumArr) {
+//    float seconds = 0.0f;
+//
+//    for (int i = 0; i < dim; i++) {
+//        seconds += SumArrayGPU(arr_in, i + 1, &cumSumArr[i]);  // + 1 for the size of the subArr
+//    }
+//
+//    return seconds;
+//}
+//static float PrefixSumGPU(float*  arr_in, const int dim, float* const cumSumArr) {
+static float CumSumGPU(float* arr_in, const int dim, float* const cumSumArr) {
     float seconds = 0.0f;
 
-    for (int i = 0; i < dim; i++) {
-        seconds += SumArrayGPU(arr_in, i + 1, &cumSumArr[i]);  // + 1 for the size of the subArr
-    }
+    // full scan with BCAO
+    seconds = scan(cumSumArr, arr_in, N, true);
 
     return seconds;
 }
